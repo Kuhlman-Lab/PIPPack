@@ -1,0 +1,16 @@
+# Default configuration for training experiments.
+
+defaults:
+  - _self_
+  - dataset: top2018.yaml
+  - model: pippack.yaml
+  - experiment: pippack_ipmp.yaml
+
+hydra:
+  job:
+    chdir: True
+  run:
+    dir: exp_logs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+  callbacks:
+    save_job_info:
+      _target_: hydra.experimental.callbacks.PickleJobInfoCallback

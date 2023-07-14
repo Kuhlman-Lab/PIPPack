@@ -1,0 +1,25 @@
+# Default configuration for inference.
+
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+inference:
+  # Inference arguments
+  exp_dir: ???
+  pdb_path: ???
+  output_dir: ???
+  n_recycle: 3
+  temperature: 0.0
+  force_cpu: False
+  batch_size: 10000
+  seed: 42
+
+  # Debugging
+  debug: False
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

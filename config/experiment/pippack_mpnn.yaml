@@ -1,0 +1,24 @@
+# @package _global_
+
+defaults:
+  - override /model: pippack.yaml
+  - override /dataset: top2018.yaml
+
+# Training arguments
+experiment:
+  name: pippack_mpnn
+  epochs: 150
+  validate_every_n_epochs: 1
+  n_recycle: 3
+  use_b_factor_mask: True
+  force_cpu: False
+  seed: null
+  logging_precision: 5
+
+  # Developer
+  debug: False
+
+# Dataset arguments
+dataset:
+  num_workers: 8
+  batch_size: 8
