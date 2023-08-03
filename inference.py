@@ -24,15 +24,24 @@ logger = logging.getLogger(__name__)
 def replace_protein_sequence(protein, protein_name, new_seqs):
     proteins = []
     
-    for i, seq in enumerate(new_seqs):
+    for i, seqs in enumerate(new_seqs):
+        # Verify that the lengths match.
+        if len(np.unique(protein['chain_index'])) != len(seqs):
+            raise ValueError(f"Length of number of chains in the new sequence ({len(seqs)}) does not match the number of chains in the protein ({len(np.unique(protein['chain_index']))}).")
+        else:
+            for chain in np.unique(protein['chain_index']):
+                if len(seqs[chain]) != len(np.where(protein['chain_index'] == chain)[0]):
+                    raise ValueError(f"Length of sequence for chain {chain} ({len(seqs[chain])}) does not match the number of residues in chain {chain} ({len(np.where(protein['chain_index'] == chain)[0])}).")
+        
         # Replace protein sequence info
         new_protein = copy.deepcopy(protein)
-        aatype = [rc.restype_order[res] for res in seq]
-        new_protein["aatype"] = np.array(aatype).astype(np.int64)
-        
+        for j, seq in enumerate(seqs):
+            aatype = np.array([rc.restype_order[res] for res in seq]).astype(np.int64)
+            new_protein['aatype'][np.where(new_protein['chain_index'] == j)[0]] = aatype
+            
         # Rebuild atom mask
         atom_mask = []
-        for res in seq:
+        for res in ''.join(seqs):
             res_atoms = rc.restype_name_to_atom14_names[rc.restype_1to3[res]]
             res_mask = [1 if atom != "" else 0 for atom in res_atoms]
             atom_mask.append(res_mask)
@@ -119,7 +128,7 @@ def main(cfg: DictConfig) -> None:
         
         with open(fasta_files[0], 'r') as f:
             lines = f.readlines()
-        new_seqs = [line.strip() for line in lines if line[0] != ">" and line]
+        new_seqs = [line.strip().split('/') for line in lines if line[0] != ">" and line]
         
         proteins = replace_protein_sequence(vars(from_pdb_file(pdb_files[0], mse_to_met=True)), os.path.basename(pdb_files[0])[:-4], new_seqs)
     else: 
