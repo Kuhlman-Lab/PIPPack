@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import *
 import numpy as np
 import torch
@@ -19,13 +20,19 @@ def gather_edges(edges, neighbor_idx):
 
 
 def gather_nodes(nodes, neighbor_idx):
-    # Features [B,N,C] at Neighbor indices [B,N,K] => [B,N,K,C]
-    # Flatten and expand indices per batch [B,N,K] => [B,NK] => [B,NK,C]
-    neighbors_flat = neighbor_idx.view((neighbor_idx.shape[0], -1))
-    neighbors_flat = neighbors_flat.unsqueeze(-1).expand(-1, -1, nodes.size(2))
+    # Features [...,N,C] at Neighbor indices [...,N,K] => [...,N,K,C]
+    is_batched = neighbor_idx.dim() == 3
+    n_feat_dims = nodes.dim() - (1 + is_batched)
+
+    # Flatten and expand indices per batch [...,N,K] => [...,NK] => [...,NK,C]
+    neighbors_flat = neighbor_idx.view((*neighbor_idx.shape[:-2], -1))
+    for _ in range(n_feat_dims):
+        neighbors_flat.unsqueeze_(-1)
+    neighbors_flat = neighbors_flat.expand(*([-1] * (1 + is_batched)), *nodes.shape[-n_feat_dims:])
+    
     # Gather and re-pack
-    neighbor_features = torch.gather(nodes, 1, neighbors_flat)
-    neighbor_features = neighbor_features.view(list(neighbor_idx.shape)[:3] + [-1])
+    neighbor_features = torch.gather(nodes, -n_feat_dims - 1, neighbors_flat)
+    neighbor_features = neighbor_features.view(list(neighbor_idx.shape) + list(nodes.shape[-n_feat_dims:]))
     return neighbor_features
 
 
@@ -84,7 +91,7 @@ class MLP(nn.Module):
 
 
 class MPNNLayer(nn.Module):
-    def __init__(self, num_hidden, num_in, dropout=0.1, scale=30, edge_update=False, act='relu'):
+    def __init__(self, num_hidden, num_in, dropout=0.1, scale=30, edge_update=False, act='relu', extra_params=0):
         super(MPNNLayer, self).__init__()
         self.num_hidden = num_hidden
         self.num_in = num_in
@@ -93,13 +100,13 @@ class MPNNLayer(nn.Module):
         
         self.dropout = nn.ModuleList([nn.Dropout(dropout) for _ in range(2)])
         self.norm = nn.ModuleList([nn.LayerNorm(num_hidden) for _ in range(2)])
-        self.W_v = MLP(num_hidden + num_in, num_hidden, num_hidden, num_layers=3, act=act)
+        self.W_v = MLP(num_hidden + num_in, num_hidden + extra_params, num_hidden, num_layers=3, act=act)
         self.dense = MLP(num_hidden, num_hidden * 4, num_hidden, num_layers=2, act=act)
         
         self.act = get_act_fxn(act)
         
         if edge_update:
-            self.W_e = MLP(num_hidden + num_in, num_hidden, num_hidden, num_layers=3, act=act)
+            self.W_e = MLP(num_hidden + num_in, num_hidden + extra_params, num_hidden, num_layers=3, act=act)
             self.dropout2 = nn.Dropout(dropout)
             self.norm2 = nn.LayerNorm(num_hidden)
             
@@ -257,6 +264,238 @@ class InvariantPointMessagePassing(nn.Module):
         return h_V, h_E
 
 
+class IPMP_IPA(nn.Module):
+    def __init__(self, node_dim, edge_dim, hidden_dim=16, n_heads=1, n_query_points=4, n_value_points=8, edge_update=False, position_scale=10.0, dropout=0.1, act='relu'):
+        super().__init__()
+        
+        self.hidden_dim = hidden_dim
+        self.n_heads = n_heads
+        self.n_query_points = n_query_points
+        self.n_value_points = n_value_points
+        self.position_scale = position_scale
+        self.edge_update = edge_update
+        
+        # Linear layers for queries, keys, and values
+        self.linear_q = nn.Linear(node_dim, hidden_dim * n_heads)
+        self.linear_kv = nn.Linear(node_dim, 2 * hidden_dim * n_heads)
+        
+        self.linear_q_points = nn.Linear(node_dim, n_heads * n_query_points * 3)
+        self.linear_kv_points = nn.Linear(node_dim, n_heads * (n_query_points + n_value_points) * 3)
+        
+        self.linear_b = nn.Linear(edge_dim, n_heads)
+        
+        self.head_weights = nn.Parameter(torch.zeros((n_heads)))
+        with torch.no_grad():
+            self.head_weights.fill_(0.541324854612918)
+        
+        out_dim = n_heads * (edge_dim + hidden_dim + n_value_points * 4)
+        self.linear_out = nn.Linear(out_dim, node_dim)
+        
+        self.dropout = nn.ModuleList([nn.Dropout(dropout) for _ in range(2)])
+        self.norm = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(2)])
+        
+        self.node_dense = MLP(node_dim, node_dim * 4, node_dim, num_layers=2, act=act)
+        
+        if edge_update:
+            # Linear layers for queries, keys, and values
+            self.linear_q_e = nn.Linear(node_dim, hidden_dim * n_heads)
+            self.linear_kv_e = nn.Linear(node_dim, 2 * hidden_dim * n_heads)
+            
+            self.linear_q_points_e = nn.Linear(node_dim, n_heads * n_query_points * 3)
+            self.linear_kv_points_e = nn.Linear(node_dim, n_heads * (n_query_points + n_value_points) * 3)
+            
+            self.linear_b_e = nn.Linear(edge_dim, n_heads)
+            
+            self.head_weights_e = nn.Parameter(torch.zeros((n_heads)))
+            with torch.no_grad():
+                self.head_weights_e.fill_(0.541324854612918)
+            
+            out_dim = n_heads * (edge_dim + hidden_dim + n_value_points * 4)
+            self.linear_out_e = nn.Linear(out_dim, edge_dim)
+            
+            self.dropout_e = nn.ModuleList([nn.Dropout(dropout) for _ in range(2)])
+            self.norm_e = nn.ModuleList([nn.LayerNorm(hidden_dim) for _ in range(2)])
+            
+            self.edge_dense = MLP(edge_dim, edge_dim * 4, edge_dim, num_layers=2, act=act)
+        
+    def _get_node_update(self, h_V, h_E, E_idx, X, mask_attend=None):
+        # Get backbone global frames from N, CA, and C
+        scaled_X = X / self.position_scale
+        bb_to_global = get_bb_frames(scaled_X[..., 0, :], scaled_X[..., 1, :], scaled_X[..., 2, :])
+        
+        # Generate queries, keys, and values from nodes
+        q = self.linear_q(h_V) # [*, N_res, H * C]
+        q = q.view(q.shape[:-1] + (self.n_heads, -1)) # [*, N_res, H, C]
+        
+        kv = self.linear_kv(h_V) # [*, N_res, 2 * H * C]
+        kv = kv.view(kv.shape[:-1] + (self.n_heads, -1)) # [*, N_res, H, 2 * C]
+        k, v = torch.split(kv, self.hidden_dim, dim=-1) # 2 [*, N_res, H, C]
+        
+        # Generate query, key, and value points from nodes
+        q_pts = self.linear_q_points(h_V) # [*, N_res, H * P_q * 3]
+        q_pts = torch.split(q_pts, q_pts.shape[-1] // 3, dim=-1) # 3 [*, N_res, H * P_q]
+        q_pts = torch.stack(q_pts, dim=-1) # [*, N_res, H * P_q, 3]
+        q_pts = bb_to_global[..., None].apply(q_pts) # [*, N_res, H * P_q, 3]
+        q_pts = q_pts.view(
+            q_pts.shape[:-2] + (self.n_heads, self.n_query_points, 3)
+        ) # [*, N_res, H, P_q, 3]
+        
+        kv_pts = self.linear_kv_points(h_V) # [*, N_res, H * (P_q + P_v) * 3]
+        kv_pts = torch.split(kv_pts, kv_pts.shape[-1] // 3, dim=-1) # 3 [*, N_res, H * (P_q + P_v)]
+        kv_pts = torch.stack(kv_pts, dim=-1) # [*, N_res, H * (P_q + P_v), 3]
+        kv_pts = bb_to_global[..., None].apply(kv_pts) # [*, N_res, H * (P_q + P_v), 3]
+        kv_pts = kv_pts.view(kv_pts.shape[:-2] + (self.n_heads, -1, 3))
+        k_pts, v_pts = torch.split(
+            kv_pts, [self.n_query_points, self.n_value_points], dim=-2
+        )# [*, N_res, H, P_q, 3], [*, N_res, H, P_v, 3]
+        
+        # Compute attention bias
+        b = self.linear_b(h_E) # [*, N_res, K, H]
+        
+        # Compute attention weight
+        a = torch.einsum("...ihc,...ijhc->...ijh", q, gather_nodes(k, E_idx))
+        a *= math.sqrt(1.0 / (3 * self.hidden_dim))
+        a += math.sqrt(1.0 / 3) * b # [*, N_res, K, H]
+        
+        pt_att = q_pts.unsqueeze(-4) - gather_nodes(k_pts, E_idx) # [*, N_res, K, H, P_q, 3]
+        pt_att = torch.sum(pt_att ** 2, dim=-1) # [*, N_res, K, H, P_q]
+        
+        head_weights = F.softplus(self.head_weights).view(
+            *((1,) * len(pt_att.shape[:-2]) + (-1, 1))
+        ) # [*, 1, 1, H, 1]
+        pt_att = math.sqrt(1.0 / (3 * (self.n_query_points * 9.0 / 2))) * head_weights * pt_att # [*, N_res, K, H, P_q]
+        pt_att = torch.sum(pt_att, dim=-1) * -0.5 # [*, N_res, K, H]
+        
+        if mask_attend is not None:
+            att_mask = 1e5 * (mask_attend - 1)
+        else:
+            att_mask = torch.zeros_like(E_idx)
+        
+        a = a + pt_att + att_mask[..., None] # [*, N_res, K, H]
+        a = F.softmax(a, dim=-2) # [*, N_res, K, H]
+        
+        # Compute update
+        # [*, N_res, H, C_hidden]
+        o = torch.einsum('...ijh,...ijhc->...ihc', a, gather_nodes(v, E_idx))
+        o = o.view(*o.shape[:-2], -1)
+
+        o_pt = torch.einsum("...ijh,...ijhpx->...ihpx", a, gather_nodes(v_pts, E_idx))
+        o_pt = bb_to_global[..., None, None].invert_apply(o_pt) # [*, N_res, H, P_v, 3]
+        o_pt_norm = torch.sqrt(torch.sum(o_pt ** 2, dim=-1) + 1e-8).view(*o_pt.shape[:-3], -1)
+        o_pt = o_pt.reshape(*o_pt.shape[:-3], -1, 3)
+        
+        o_pair = torch.einsum("...ijh,...ijc->...ihc", a, h_E) # [*, N_res, H, C_z]
+        o_pair = o_pair.view(*o_pair.shape[:-2], -1)
+        
+        # Compute node update
+        s = self.linear_out(
+            torch.cat(
+                (o, *torch.unbind(o_pt, dim=-1), o_pt_norm, o_pair), dim=-1
+            )
+        )
+        
+        return s
+        
+    def _get_edge_update(self, h_V, h_E, E_idx, X, mask_attend=None):
+        # Get backbone global frames from N, CA, and C
+        scaled_X = X / self.position_scale
+        bb_to_global = get_bb_frames(scaled_X[..., 0, :], scaled_X[..., 1, :], scaled_X[..., 2, :])
+        
+        # Generate queries, keys, and values from nodes
+        q = self.linear_q_e(h_V) # [*, N_res, H * C]
+        q = q.view(q.shape[:-1] + (self.n_heads, -1)) # [*, N_res, H, C]
+        
+        kv = self.linear_kv_e(h_V) # [*, N_res, 2 * H * C]
+        kv = kv.view(kv.shape[:-1] + (self.n_heads, -1)) # [*, N_res, H, 2 * C]
+        k, v = torch.split(kv, self.hidden_dim, dim=-1) # 2 [*, N_res, H, C]
+        
+        # Generate query, key, and value points from nodes
+        q_pts = self.linear_q_points_e(h_V) # [*, N_res, H * P_q * 3]
+        q_pts = torch.split(q_pts, q_pts.shape[-1] // 3, dim=-1) # 3 [*, N_res, H * P_q]
+        q_pts = torch.stack(q_pts, dim=-1) # [*, N_res, H * P_q, 3]
+        q_pts = bb_to_global[..., None].apply(q_pts) # [*, N_res, H * P_q, 3]
+        q_pts = q_pts.view(
+            q_pts.shape[:-2] + (self.n_heads, self.n_query_points, 3)
+        ) # [*, N_res, H, P_q, 3]
+        
+        kv_pts = self.linear_kv_points_e(h_V) # [*, N_res, H * (P_q + P_v) * 3]
+        kv_pts = torch.split(kv_pts, kv_pts.shape[-1] // 3, dim=-1) # 3 [*, N_res, H * (P_q + P_v)]
+        kv_pts = torch.stack(kv_pts, dim=-1) # [*, N_res, H * (P_q + P_v), 3]
+        kv_pts = bb_to_global[..., None].apply(kv_pts) # [*, N_res, H * (P_q + P_v), 3]
+        kv_pts = kv_pts.view(kv_pts.shape[:-2] + (self.n_heads, -1, 3))
+        k_pts, v_pts = torch.split(
+            kv_pts, [self.n_query_points, self.n_value_points], dim=-2
+        )# [*, N_res, H, P_q, 3], [*, N_res, H, P_v, 3]
+        
+        # Compute attention bias
+        b = self.linear_b_e(h_E) # [*, N_res, K, H]
+        
+        # Compute attention weight
+        a = torch.einsum("...ihc,...ijhc->...ijh", q, gather_nodes(k, E_idx))
+        a *= math.sqrt(1.0 / (3 * self.hidden_dim))
+        a += math.sqrt(1.0 / 3) * b # [*, N_res, K, H]
+        
+        pt_att = q_pts.unsqueeze(-4) - gather_nodes(k_pts, E_idx) # [*, N_res, K, H, P_q, 3]
+        pt_att = torch.sum(pt_att ** 2, dim=-1) # [*, N_res, K, H, P_q]
+        
+        head_weights = F.softplus(self.head_weights_e).view(
+            *((1,) * len(pt_att.shape[:-2]) + (-1, 1))
+        ) # [*, 1, 1, H, 1]
+        pt_att = math.sqrt(1.0 / (3 * (self.n_query_points * 9.0 / 2))) * head_weights * pt_att # [*, N_res, K, H, P_q]
+        pt_att = torch.sum(pt_att, dim=-1) * -0.5 # [*, N_res, K, H]
+        
+        if mask_attend is not None:
+            att_mask = 1e5 * (mask_attend - 1)
+        else:
+            att_mask = torch.zeros_like(E_idx)
+        
+        a = a + pt_att + att_mask[..., None] # [*, N_res, K, H]
+        a = F.softmax(a, dim=-2) # [*, N_res, K, H]
+        
+        # Compute update
+        # [*, N_res, K, H, C_hidden]
+        o = torch.einsum('...ijh,...ijhc->...ijhc', a, gather_nodes(v, E_idx))
+        o = o.view(*o.shape[:-2], -1)
+
+        o_pt = torch.einsum("...ijh,...ijhpx->...ijhpx", a, gather_nodes(v_pts, E_idx))
+        o_pt = bb_to_global[..., None, None, None].invert_apply(o_pt) # [*, N_res, K, H, P_v, 3]
+        o_pt_norm = torch.sqrt(torch.sum(o_pt ** 2, dim=-1) + 1e-8).view(*o_pt.shape[:-3], -1)
+        o_pt = o_pt.reshape(*o_pt.shape[:-3], -1, 3)
+        
+        o_pair = torch.einsum("...ijh,...ijc->...ijhc", a, h_E) # [*, N_res, K, H, C_z]
+        o_pair = o_pair.view(*o_pair.shape[:-2], -1)
+        
+        # Compute edge update
+        s = self.linear_out_e(
+            torch.cat(
+                (o, *torch.unbind(o_pt, dim=-1), o_pt_norm, o_pair), dim=-1
+            )
+        )
+        
+        return s
+        
+    def forward(self, h_V, h_E, E_idx, X, mask_V=None, mask_attend=None):
+        s = self._get_node_update(h_V, h_E, E_idx, X, mask_attend)
+        h_V = self.norm[0](h_V + self.dropout[0](s))
+        node_m = self.node_dense(h_V)
+        h_V = self.norm[1](h_V + self.dropout[1](node_m))
+        
+        if mask_V is not None:
+            h_V = h_V * mask_V[..., None]
+            
+        if self.edge_update:
+            s = self._get_edge_update(h_V, h_E, E_idx, X, mask_attend)
+            if mask_attend is not None:
+                s = s * mask_attend[..., None]
+            h_E = self.norm_e[0](h_E + self.dropout_e[0](s))
+            edge_m = self.edge_dense(h_E)
+            h_E = self.norm_e[1](h_E + self.dropout_e[1](edge_m))
+            if mask_attend is not None:
+                h_E = h_E * mask_attend[..., None]
+        
+        return h_V, h_E
+
+
 class PositionalEncodings(nn.Module):
     def __init__(self, num_embeddings, period_range=[2,1000], max_relative_feature=32, af2_relpos=False):
         super(PositionalEncodings, self).__init__()
@@ -316,43 +555,30 @@ class PositionalEncodings(nn.Module):
 
 
 class ProteinFeatures(nn.Module):
-    def __init__(self, edge_features, node_features, embed_seq=True, use_sc_dists=True, num_positional_embeddings=16,
-        num_rbf=16, top_k=30, augment_eps=0., dropout=0.1, af2_relpos=False, bb_dihedrals=None):
+    def __init__(self, edge_features, node_features, num_positional_embeddings=16,
+        num_rbf=16, top_k=30, augment_eps=0., dropout=0.1, af2_relpos=True):
         """ Extract protein features """
         super(ProteinFeatures, self).__init__()
         self.edge_features = edge_features
         self.node_features = node_features
-        self.embed_seq = embed_seq
-        self.use_sc_dists = use_sc_dists
         self.top_k = top_k
         self.augment_eps = augment_eps 
         self.num_rbf = num_rbf
-        self.bb_dihedrals = bb_dihedrals
         
         if af2_relpos:
-            num_positional_embeddings = 65 # max_relative_feature * 2 + 1, TODO: don't hard-code this
+            num_positional_embeddings = 65
 
         # Feature dimensions
-        node_in = 0
-        if embed_seq:
-            node_in += 21
-        if bb_dihedrals == "sincos":
-            node_in += 3 * 2
-        elif bb_dihedrals == "bin5":
-            node_in += 3 * 73
-        elif bb_dihedrals == "bin10":
-            node_in += 3 * 37
-        n_atoms = 14 if use_sc_dists else 5
-        edge_in = num_positional_embeddings + (n_atoms ** 2) * num_rbf
+        node_in = 21 + 3 * 2
+        edge_in = num_positional_embeddings + (14 ** 2) * num_rbf
 
         # Positional encoding
         self.embeddings = PositionalEncodings(num_positional_embeddings, af2_relpos=af2_relpos)
         self.dropout = nn.Dropout(dropout)
         
         # Normalization and embedding
-        if node_in != 0:
-            self.node_embedding = nn.Linear(node_in,  node_features, bias=True)
-            self.norm_nodes = nn.LayerNorm(node_features)
+        self.node_embedding = nn.Linear(node_in,  node_features, bias=True)
+        self.norm_nodes = nn.LayerNorm(node_features)
         self.edge_embedding = nn.Linear(edge_in, edge_features, bias=True)
         self.norm_edges = nn.LayerNorm(edge_features)
 
@@ -437,41 +663,26 @@ class ProteinFeatures(nn.Module):
         C = X[:, :, 2, :]
         O = X[:, :, 3, :]
         Cb = self._impute_CB(N, Ca, C)
-        if X.shape[-2] == 14:
-            sc_atoms = X[..., 5:, :]
-        else:
-            sc_atoms = torch.zeros((*X.shape[:-2], 9, 3), dtype=torch.float32, device=X.device)
+        sc_atoms = X[..., 5:, :]
         X = torch.stack((N, Ca, C, O, Cb), dim=-2)
-        if self.use_sc_dists:
-            X = torch.cat((X, sc_atoms), dim=-2) 
+        X = torch.cat((X, sc_atoms), dim=-2) 
         RBF_all = self._atomic_distances(X, E_idx)
         
         E = torch.cat((E_positional, RBF_all), -1)
             
-        # One-hot encoded sequence for node features
-        if self.embed_seq:
-            V = F.one_hot(S, num_classes=21).float()
-            if self.bb_dihedrals == "sincos":
-                V = torch.cat((V, BB_D.view(*BB_D.shape[:-2], -1)), dim=-1)
-            elif self.bb_dihedrals == "bin5":
-                V = torch.cat((V, F.one_hot(BB_D.long(), num_classes=73).float().view(*BB_D.shape[:-1], -1)), dim=-1)
-            elif self.bb_dihedrals == "bin10":
-                V = torch.cat((V, F.one_hot(BB_D.long(), num_classes=37).float().view(*BB_D.shape[:-1], -1)), dim=-1)
-                
-            V = self.node_embedding(V)
-            V = self.norm_nodes(V)
-        elif self.bb_dihedrals is not None:
-            if self.bb_dihedrals == "sincos":
-                V = BB_D.view(*BB_D.shape[:-2], -1)
-            elif self.bb_dihedrals == "bin5":
-                V = F.one_hot(BB_D.long(), num_classes=73).float()
-            elif self.bb_dihedrals == "bin10":
-                V = F.one_hot(BB_D.long(), num_classes=37).float()
-                
-            V = self.node_embedding(V)
-            V = self.norm_nodes(V)
-        else:
-            V = torch.zeros((*X.shape[:-2], self.node_features), dtype=torch.float32, device=X.device)
+        Vs = []
+        # One-hot encoded sequence
+        Vs.append(F.one_hot(S, num_classes=21).float())
+        
+        # Sin/cos encoded backbone dihedrals
+        Vs.append(BB_D.view(*BB_D.shape[:-2], -1))
+        
+        # Embed nodes
+        V = torch.cat(Vs, dim=-1)   
+        V = self.node_embedding(V)
+        V = self.norm_nodes(V)
+        
+        # Embed edges
         E = self.edge_embedding(E)
         E = self.norm_edges(E)
 
@@ -532,27 +743,19 @@ class PIPPack(nn.Module):
         k_neighbors: int = 30,
         augment_eps: float = 0.,
         use_ipmp: bool = False,
+        use_ipmp_ipa: bool = False,
         n_points: Optional[int] = None,
         dropout: float = 0.1,
-        af2_relpos: bool = True,
         act: str = "relu",
-        mlp_out: bool = True,
         predict_bin_chi: bool = True,
         n_chi_bins: int = 72,
-        sequential_chi: bool = False,
         predict_offset: bool = True,
-        use_true_relpos: bool = True,
         position_scale: float = 1.0,
-        recycle_nodes: bool = False,
-        recycle_edges: bool = False,
-        bb_dihedral: Optional[str] = None,
         loss: Optional[Dict[str, Union[float, bool]]] = {
-            "use_clash_loss": False,
             "chi_nll_loss_weight": 1.0,
             "chi_mse_loss_weight": 1.0,
-            "offset_mse_loss_weight": 1.0,
-            "clash_loss_weight": 0.0,
-            "rmsd_loss_weight": 0.0},
+            "offset_mse_loss_weight": 1.0
+        },
     ) -> None:
         """ Graph labeling network """
         super().__init__()
@@ -561,20 +764,14 @@ class PIPPack(nn.Module):
         self.node_features = node_features
         self.edge_features = edge_features
         self.hidden_dim = hidden_dim
-        self.sequential_chi = sequential_chi
-        self.use_true_relpos = use_true_relpos
         self.k_neighbors = k_neighbors
-        self.recycle_nodes = recycle_nodes
-        self.recycle_edges = recycle_edges
         self.loss = loss
-        self.bb_dihedral = bb_dihedral
         self.log = logging.getLogger("PIPPack")
 
         # Featurization layers
         self.features = ProteinFeatures(
             node_features, edge_features, top_k=k_neighbors,
-            augment_eps=augment_eps, dropout=dropout, af2_relpos=af2_relpos,
-            bb_dihedrals=bb_dihedral
+            augment_eps=augment_eps, dropout=dropout
         )
 
         # Embedding layers
@@ -583,58 +780,31 @@ class PIPPack(nn.Module):
         
         # Sequence embedding layer
         self.W_seq = nn.Embedding(21, hidden_dim)
-        
-        # Recycle embedding layers
-        if recycle_nodes:
-            self.recycler_nodes = nn.LayerNorm(node_features)
-        if recycle_edges:
-            self.recycler_edges = nn.LayerNorm(edge_features)
-
-        # Target embedding layers
-        if sequential_chi:
-            if predict_bin_chi:
-                self.W_ch1 = nn.Embedding(n_chi_bins + 1, 32)
-                self.W_ch2 = nn.Embedding(n_chi_bins + 1, 32)
-                self.W_ch3 = nn.Embedding(n_chi_bins + 1, 32)
-            else:
-                self.W_ch1 = nn.Linear(2, 32)
-                self.W_ch2 = nn.Linear(2, 32)
-                self.W_ch3 = nn.Linear(2, 32)
             
         # MPNN layers
         self.use_ipmp = use_ipmp
-        if not use_ipmp:
-            self.mpnn_layers = nn.ModuleList([
-                MPNNLayer(hidden_dim, hidden_dim * 2, dropout=dropout, edge_update=True, act=act, scale=k_neighbors)
-                for _ in range(num_mpnn_layers)
-            ])
-        else:
+        self.use_ipmp_ipa = use_ipmp_ipa
+        if use_ipmp:
             self.mpnn_layers = nn.ModuleList([
                 InvariantPointMessagePassing(hidden_dim, hidden_dim, hidden_dim, n_points, dropout, act=act, edge_update=True, position_scale=position_scale)
                 for _ in range(num_mpnn_layers)
             ])
-        
+        elif use_ipmp_ipa:
+            self.mpnn_layers = nn.ModuleList([
+                IPMP_IPA(hidden_dim, hidden_dim, hidden_dim, edge_update=True, dropout=dropout, act=act)
+                for _ in range(num_mpnn_layers)
+            ])            
+        else:
+            self.mpnn_layers = nn.ModuleList([
+                MPNNLayer(hidden_dim, hidden_dim * 2, dropout=dropout, edge_update=True, act=act, scale=k_neighbors)
+                for _ in range(num_mpnn_layers)
+            ])
+
         # Output layers 
         self.predict_bin_chi = predict_bin_chi
         self.n_chi_bins = n_chi_bins
-        if not sequential_chi:
-            out_dim = 8 if not predict_bin_chi else (n_chi_bins + 1) * 4
-            if mlp_out:
-                self.W_out_chi = MLP(hidden_dim * 2, hidden_dim, out_dim, 3, act=act)
-            else:
-                self.W_out_chi = nn.Linear(hidden_dim * 2, out_dim)
-        else:
-            out_dim = 2 if not predict_bin_chi else (n_chi_bins + 1)
-            if mlp_out:
-                self.W_out_chi1 = MLP(hidden_dim * 2, hidden_dim, out_dim, 3, act=act)
-                self.W_out_chi2 = MLP(hidden_dim * 2 + 32, hidden_dim, out_dim, 3, act=act)
-                self.W_out_chi3 = MLP(hidden_dim * 2 + 32 * 2, hidden_dim, out_dim, 3, act=act)
-                self.W_out_chi4 = MLP(hidden_dim * 2 + 32 * 3, hidden_dim, out_dim, 3, act=act)
-            else:
-                self.W_out_chi1 = nn.Linear(hidden_dim * 2, out_dim)
-                self.W_out_chi2 = nn.Linear(hidden_dim * 2 + 32, out_dim)
-                self.W_out_chi3 = nn.Linear(hidden_dim * 2 + 32 * 2, out_dim)
-                self.W_out_chi4 = nn.Linear(hidden_dim * 2 + 32 * 3, out_dim)
+        out_dim = 8 if not predict_bin_chi else (n_chi_bins + 1) * 4
+        self.W_out_chi = MLP(hidden_dim * 2, hidden_dim, out_dim, 3, act=act)
 
         # Offset prediction
         self.predict_offset = predict_offset
@@ -746,9 +916,6 @@ class PIPPack(nn.Module):
         # Add empty previous prediction
         prevs = {
             "pred_X": torch.zeros_like(batch.X),
-            "pred_SC_D": torch.zeros_like(batch.SC_D),
-            "prev_V": torch.zeros((*batch.S.shape, self.node_features), device=batch.S.device),
-            "prev_E": torch.zeros((*batch.S.shape, self.k_neighbors, self.edge_features), device=batch.S.device),
         }
         
         with torch.no_grad():
@@ -769,9 +936,6 @@ class PIPPack(nn.Module):
                 
                 # Update previous predictions
                 prevs["pred_X"] = atom14_xyz
-                prevs["pred_SC_D"] = chi_pred
-                prevs["prev_V"] = outputs["node_emb"]
-                prevs["prev_E"] = outputs["edge_emb"]
                 
         # Final prediction
         outputs = self.single_forward(batch, prevs)
@@ -797,137 +961,51 @@ class PIPPack(nn.Module):
         # Unpack batch
         X = torch.cat((batch.X[..., :4, :], prevs['pred_X'][..., 4:, :]), dim=-2)
         S = batch.S
-        if self.predict_bin_chi:
-            CH = batch.SC_D_bin
-        else:
-            CH = batch.SC_D_sincos.view(*S.shape, -1)
-        if self.bb_dihedral == 'sincos':
-            BB_D = batch.BB_D_sincos
-        elif self.bb_dihedral == 'bin5':
-            BB_D = batch.BB_D_bin5
-        elif self.bb_dihedral == 'bin10':
-            BB_D = batch.BB_D_bin10
-        else:
-            BB_D = None
+        BB_D = batch.BB_D_sincos
         mask = batch.residue_mask
-        if self.use_true_relpos:
-            residue_index = batch.residue_index
-        else:
-            residue_index = None
+        residue_index = batch.residue_index
 
         # Embed initial features
         V, E, E_idx = self.features(X, S, BB_D, mask, residue_index)
         h_V = self.W_v(V)
         h_E = self.W_e(E)
 
-        # Add recycled features
-        if self.recycle_nodes:
-            h_V = h_V + self.recycler_nodes(prevs["prev_V"])
-        if self.recycle_edges:
-            h_E = h_E + self.recycler_edges(prevs["prev_E"])
-
-        mask_attend = gather_nodes(mask.unsqueeze(-1),  E_idx).squeeze(-1)
+        mask_attend = gather_nodes(mask.unsqueeze(-1), E_idx).squeeze(-1)
         mask_attend = mask.unsqueeze(-1) * mask_attend
         for layer in self.mpnn_layers:
             if torch.is_grad_enabled():
-                if not self.use_ipmp:
-                    h_V, h_E = checkpoint(layer, h_V, h_E, E_idx, mask, mask_attend)
-                else:
+                if self.use_ipmp or self.use_ipmp_ipa:
                     h_V, h_E = checkpoint(layer, h_V, h_E, E_idx, X, mask, mask_attend)
-            else:
-                if not self.use_ipmp:
-                    h_V, h_E = layer(h_V, h_E, E_idx, mask, mask_attend)
                 else:
-                    h_V, h_E = layer(h_V, h_E, E_idx, X, mask, mask_attend)
-
-        # Get chi embeddings for sequential prediction
-        if self.sequential_chi:
-            if not self.predict_bin_chi:
-                h_CH1 = self.W_ch1(CH.view(CH.shape[0], CH.shape[1], 4, 2)[:, :, 0])
-                h_CH2 = self.W_ch2(CH.view(CH.shape[0], CH.shape[1], 4, 2)[:, :, 1])
-                h_CH3 = self.W_ch3(CH.view(CH.shape[0], CH.shape[1], 4, 2)[:, :, 2])
+                    h_V, h_E = checkpoint(layer, h_V, h_E, E_idx, mask, mask_attend)
             else:
-                h_CH1 = self.W_ch1(CH[:, :, 0])
-                h_CH2 = self.W_ch2(CH[:, :, 1])
-                h_CH3 = self.W_ch3(CH[:, :, 2])
+                if self.use_ipmp or self.use_ipmp_ipa:
+                    h_V, h_E = layer(h_V, h_E, E_idx, X, mask, mask_attend)
+                else:
+                    h_V, h_E = layer(h_V, h_E, E_idx, mask, mask_attend)
 
         outputs = {}
         # One-hot encoded sequence for node features
         h_S = self.W_seq(S)
         h_VS = torch.cat((h_V, h_S), -1)
         if not self.predict_bin_chi:
-            if not self.sequential_chi:
-                unnorm_chi = self.W_out_chi(h_VS)
-                unnorm_chi = unnorm_chi.view(X.shape[0], X.shape[1], 4, 2)
-                
-                # Normalize chi outputs
-                norm_denom = torch.sqrt(torch.clamp(torch.sum(unnorm_chi ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi = unnorm_chi / norm_denom
-                outputs['unnorm_chi'] = unnorm_chi
-                outputs['norm_chi'] = norm_chi
-            else:
-                # Chi 1 outputs
-                unnorm_chi1 = self.W_out_chi1(h_VS)
-                norm_denom1 = torch.sqrt(torch.clamp(torch.sum(unnorm_chi1 ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi1 = unnorm_chi1 / norm_denom1
-                
-                # Chi 2 outputs
-                h_VS = torch.cat((h_VS, h_CH1), dim=-1)
-                unnorm_chi2 = self.W_out_chi2(h_VS)
-                norm_denom2 = torch.sqrt(torch.clamp(torch.sum(unnorm_chi2 ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi2 = unnorm_chi2 / norm_denom2
-                
-                # Chi 3 outputs
-                h_VS = torch.cat((h_VS, h_CH2), dim=-1)
-                unnorm_chi3 = self.W_out_chi3(h_VS)
-                norm_denom3 = torch.sqrt(torch.clamp(torch.sum(unnorm_chi3 ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi3 = unnorm_chi3 / norm_denom3
-                
-                # Chi 4 outputs
-                h_VS = torch.cat((h_VS, h_CH3), dim=-1)
-                unnorm_chi4 = self.W_out_chi4(h_VS)
-                norm_denom4 = torch.sqrt(torch.clamp(torch.sum(unnorm_chi4 ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi4 = unnorm_chi4 / norm_denom4
-                
-                unnorm_chi = torch.stack((unnorm_chi1, unnorm_chi2, unnorm_chi3, unnorm_chi4), dim=-2)
-                norm_chi = torch.stack((norm_chi1, norm_chi2, norm_chi3, norm_chi4), dim=-2)
-                outputs['unnorm_chi'] = unnorm_chi
-                outputs['norm_chi'] = norm_chi
+            unnorm_chi = self.W_out_chi(h_VS)
+            unnorm_chi = unnorm_chi.view(X.shape[0], X.shape[1], 4, 2)
+            
+            # Normalize chi outputs
+            norm_denom = torch.sqrt(torch.clamp(torch.sum(unnorm_chi ** 2, dim=-1, keepdim=True), min=1e-12))
+            norm_chi = unnorm_chi / norm_denom
+            outputs['unnorm_chi'] = unnorm_chi
+            outputs['norm_chi'] = norm_chi
         else:
-            if not self.sequential_chi:
-                CH_logits = self.W_out_chi(h_VS).view(h_V.shape[0], h_V.shape[1], 4, -1)
-                chi_log_probs = F.log_softmax(CH_logits, dim=-1)
-                outputs['chi_log_probs'] = chi_log_probs
-            else:
-                # Chi 1 output
-                CH1_logits = self.W_out_chi1(h_VS)
-                chi1_log_probs = F.log_softmax(CH1_logits, dim=-1)
-                
-                # Chi 2 output
-                h_VS = torch.cat((h_VS, h_CH1), dim=-1)
-                CH2_logits = self.W_out_chi2(h_VS)
-                chi2_log_probs = F.log_softmax(CH2_logits, dim=-1)
-                
-                # Chi 3 output
-                h_VS = torch.cat((h_VS, h_CH2), dim=-1)
-                CH3_logits = self.W_out_chi3(h_VS)
-                chi3_log_probs = F.log_softmax(CH3_logits, dim=-1)
-                
-                # Chi 4 output
-                h_VS = torch.cat((h_VS, h_CH3), dim=-1)
-                CH4_logits = self.W_out_chi4(h_VS)
-                chi4_log_probs = F.log_softmax(CH4_logits, dim=-1)
-                
-                chi_log_probs = torch.stack((chi1_log_probs, chi2_log_probs, chi3_log_probs, chi4_log_probs), dim=-2)
-                outputs['chi_log_probs'] = chi_log_probs
+            CH_logits = self.W_out_chi(h_VS).view(h_V.shape[0], h_V.shape[1], 4, -1)
+            chi_log_probs = F.log_softmax(CH_logits, dim=-1)
+            outputs['chi_log_probs'] = chi_log_probs
+            outputs['chi_logits'] = CH_logits
                 
         if self.predict_offset:
             offset = (2 * torch.pi / self.n_chi_bins) * torch.sigmoid(self.offset_layer(h_V))
             outputs['chi_bin_offset'] = offset
-
-        # Add previous node and edge embeddings to outputs
-        outputs['node_emb'] = h_V
-        outputs['edge_emb'] = h_E
             
         return outputs
 
@@ -936,9 +1014,6 @@ class PIPPack(nn.Module):
         # Add empty previous prediction
         prevs = {
             "pred_X": torch.zeros_like(batch.X),
-            "pred_SC_D": torch.zeros_like(batch.SC_D),
-            "prev_V": torch.zeros((*batch.X.shape[:-2], self.node_features), device=batch.X.device),
-            "prev_E": torch.zeros((*batch.X.shape[:-2], self.k_neighbors, self.edge_features), device=batch.X.device),
         }
         
         with torch.no_grad():
@@ -959,9 +1034,6 @@ class PIPPack(nn.Module):
                            
                 # Update previous predictions
                 prevs["pred_X"] = atom14_xyz
-                prevs["pred_SC_D"] = chi_pred
-                prevs["prev_V"] = sample_out["node_emb"]
-                prevs["prev_E"] = sample_out["edge_emb"]
                 
             # Final prediction
             sample_out = self.single_sample(batch, prevs, temperature)
@@ -987,138 +1059,50 @@ class PIPPack(nn.Module):
         # Unpack batch
         X = torch.cat((batch.X[..., :4, :], prevs['pred_X'][..., 4:, :]), dim=-2)
         S = batch.S
-        if self.bb_dihedral == 'sincos':
-            BB_D = batch.BB_D_sincos
-        elif self.bb_dihedral == 'bin5':
-            BB_D = batch.BB_D_bin5
-        elif self.bb_dihedral == 'bin10':
-            BB_D = batch.BB_D_bin10
-        else:
-            BB_D = None
+        BB_D = batch.BB_D_sincos
         mask = batch.residue_mask
-        if self.use_true_relpos:
-            residue_index = batch.residue_index
-        else:
-            residue_index = None
+        residue_index = batch.residue_index
         
         # Prepare node and edge embeddings
         V, E, E_idx = self.features(X, S, BB_D, mask, residue_index)
         h_V = self.W_v(V)
         h_E = self.W_e(E)
 
-        # Add recycled embeddings
-        if self.recycle_nodes:
-            h_V = h_V + self.recycler_nodes(prevs['prev_V'])
-        if self.recycle_edges:
-            h_E = h_E + self.recycler_edges(prevs['prev_E'])
-
-        mask_attend = gather_nodes(mask.unsqueeze(-1),  E_idx).squeeze(-1)
+        mask_attend = gather_nodes(mask.unsqueeze(-1), E_idx).squeeze(-1)
         mask_attend = mask.unsqueeze(-1) * mask_attend
         for layer in self.mpnn_layers:
-            if not self.use_ipmp:
-                h_V, h_E = layer(h_V, h_E, E_idx=E_idx, mask_V=mask, mask_attend=mask_attend)
-            else:
+            if self.use_ipmp or self.use_ipmp_ipa:
                 h_V, h_E = layer(h_V, h_E, E_idx, X, mask, mask_attend)
+            else:
+                h_V, h_E = layer(h_V, h_E, E_idx, mask, mask_attend)
 
         h_S = self.W_seq(S)
         h_VS = torch.cat((h_V, h_S), dim=-1)
             
         # Chi prediction
         if not self.predict_bin_chi:
-            if not self.sequential_chi:
-                chi_mask = torch.tensor(rc.chi_angles_mask + [[0.0, 0.0, 0.0, 0.0]], device=X.device)[S].unsqueeze(-1)
-                unnorm_chi = self.W_out_chi(h_VS)
-                unnorm_chi = unnorm_chi.view(X.shape[0], X.shape[1], 4, 2)
-                
-                # Normalize chi outputs
-                norm_denom = torch.sqrt(torch.clamp(torch.sum(unnorm_chi ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi = unnorm_chi / norm_denom
-                
-                # Mask the chi outputs
-                unnorm_chi = chi_mask * unnorm_chi
-                norm_chi = chi_mask * norm_chi
-            else:
-                chi_mask = torch.tensor(rc.chi_angles_mask + [[0.0, 0.0, 0.0, 0.0]], device=X.device)[S].unsqueeze(-1)
-                
-                # Chi 1 outputs
-                unnorm_chi1 = self.W_out_chi1(h_VS)
-                norm_denom1 = torch.sqrt(torch.clamp(torch.sum(unnorm_chi1 ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi1 = unnorm_chi1 / norm_denom1
-                
-                # Chi 2 outputs
-                h_CH1 = self.W_ch1(norm_chi1)
-                h_VS = torch.cat((h_VS, h_CH1), dim=-1)
-                unnorm_chi2 = self.W_out_chi2(h_VS)
-                norm_denom2 = torch.sqrt(torch.clamp(torch.sum(unnorm_chi2 ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi2 = unnorm_chi2 / norm_denom2
-                
-                # Chi 3 outputs
-                h_CH2 = self.W_ch2(norm_chi2)
-                h_VS = torch.cat((h_VS, h_CH2), dim=-1)
-                unnorm_chi3 = self.W_out_chi3(h_VS)
-                norm_denom3 = torch.sqrt(torch.clamp(torch.sum(unnorm_chi3 ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi3 = unnorm_chi3 / norm_denom3
-                
-                # Chi 4 outputs
-                h_CH3 = self.W_ch3(norm_chi3)
-                h_VS = torch.cat((h_VS, h_CH3), dim=-1)
-                unnorm_chi4 = self.W_out_chi4(h_VS)
-                norm_denom4 = torch.sqrt(torch.clamp(torch.sum(unnorm_chi4 ** 2, dim=-1, keepdim=True), min=1e-12))
-                norm_chi4 = unnorm_chi4 / norm_denom4
-                
-                # Mask the chi outputs
-                unnorm_chi = torch.stack((unnorm_chi1, unnorm_chi2, unnorm_chi3, unnorm_chi4), dim=-2)
-                unnorm_chi = chi_mask * unnorm_chi
-                norm_chi = torch.stack((norm_chi1, norm_chi2, norm_chi3, norm_chi4), dim=-2)
-                norm_chi = chi_mask * norm_chi
+            chi_mask = torch.tensor(rc.chi_angles_mask + [[0.0, 0.0, 0.0, 0.0]], device=X.device)[S].unsqueeze(-1)
+            unnorm_chi = self.W_out_chi(h_VS)
+            unnorm_chi = unnorm_chi.view(X.shape[0], X.shape[1], 4, 2)
+            
+            # Normalize chi outputs
+            norm_denom = torch.sqrt(torch.clamp(torch.sum(unnorm_chi ** 2, dim=-1, keepdim=True), min=1e-12))
+            norm_chi = unnorm_chi / norm_denom
+            
+            # Mask the chi outputs
+            unnorm_chi = chi_mask * unnorm_chi
+            norm_chi = chi_mask * norm_chi
         else:
-            if not self.sequential_chi:
-                chi_mask = torch.tensor(rc.chi_angles_mask + [[0.0, 0.0, 0.0, 0.0]], device=X.device)[S].unsqueeze(-1)
-                h_VS = torch.cat([h_V, h_S], dim=-1)
-                if temperature > 0.0:
-                    CH_logits = self.W_out_chi(h_VS).view(h_V.shape[0], h_V.shape[1], 4, -1) / temperature
-                    chi_probs = F.softmax(CH_logits, dim=-1)
-                    CH = torch.multinomial(chi_probs.view(-1, CH_logits.shape[-1]), 1).view(CH_logits.shape[0], CH_logits.shape[1], CH_logits.shape[2], -1).squeeze(-1)
-                else:
-                    CH_logits = self.W_out_chi(h_VS).view(h_V.shape[0], h_V.shape[1], 4, -1)
-                    chi_probs = F.softmax(CH_logits, dim=-1)
-                    CH = torch.argmax(chi_probs, dim=-1)
+            chi_mask = torch.tensor(rc.chi_angles_mask + [[0.0, 0.0, 0.0, 0.0]], device=X.device)[S].unsqueeze(-1)
+            h_VS = torch.cat([h_V, h_S], dim=-1)
+            if temperature > 0.0:
+                CH_logits = self.W_out_chi(h_VS).view(h_V.shape[0], h_V.shape[1], 4, -1) / temperature
+                chi_probs = F.softmax(CH_logits, dim=-1)
+                CH = torch.multinomial(chi_probs.view(-1, CH_logits.shape[-1]), 1).view(CH_logits.shape[0], CH_logits.shape[1], CH_logits.shape[2], -1).squeeze(-1)
             else:
-                chi_mask = torch.tensor(rc.chi_angles_mask + [[0.0, 0.0, 0.0, 0.0]], device=X.device)[S].unsqueeze(-1)
-                def _bin_from_logits(logits, temp):
-                    if temp > 0.0:
-                        logits = logits / temp
-                        chi_probs = F.softmax(logits, dim=-1)
-                        CH = torch.multinomial(chi_probs.view(-1, logits.shape[-1]), 1).view(logits.shape[0], logits.shape[1], -1).squeeze(-1)
-                    else:
-                        chi_probs = F.softmax(logits, dim=-1)
-                        CH = torch.argmax(chi_probs, dim=-1)
-                    return CH, chi_probs
-                
-                # Chi 1 output
-                CH1_logits = self.W_out_chi1(h_VS)
-                CH1, chi1_probs = _bin_from_logits(CH1_logits, temperature)
-                
-                # Chi 2 output
-                h_CH1 = self.W_ch1(CH1)
-                h_VS = torch.cat((h_VS, h_CH1), dim=-1)
-                CH2_logits = self.W_out_chi2(h_VS)
-                CH2, chi2_probs = _bin_from_logits(CH2_logits, temperature)
-                
-                # Chi 3 output
-                h_CH2 = self.W_ch2(CH2)
-                h_VS = torch.cat((h_VS, h_CH2), dim=-1)
-                CH3_logits = self.W_out_chi3(h_VS)
-                CH3, chi3_probs = _bin_from_logits(CH3_logits, temperature)
-                
-                # Chi 4 output
-                h_CH3 = self.W_ch3(CH3)
-                h_VS = torch.cat((h_VS, h_CH3), dim=-1)
-                CH4_logits = self.W_out_chi4(h_VS)
-                CH4, chi4_probs = _bin_from_logits(CH4_logits, temperature)
-
-                CH = torch.stack((CH1, CH2, CH3, CH4), dim=-1)
-                chi_probs = torch.stack((chi1_probs, chi2_probs, chi3_probs, chi4_probs), dim=-2)
+                CH_logits = self.W_out_chi(h_VS).view(h_V.shape[0], h_V.shape[1], 4, -1)
+                chi_probs = F.softmax(CH_logits, dim=-1)
+                CH = torch.argmax(chi_probs, dim=-1)
 
         if self.predict_offset:
             offset = (2 * torch.pi / self.n_chi_bins) * torch.sigmoid(self.offset_layer(h_V))
@@ -1129,8 +1113,7 @@ class PIPPack(nn.Module):
             'chi_bin': CH if self.predict_bin_chi else None,
             'chi_probs': chi_probs if self.predict_bin_chi else None,
             'chi_bin_offset': offset if self.predict_offset else None,
-            'node_emb': h_V,
-            'edge_emb': h_E,
+            'chi_logits': CH_logits if self.predict_bin_chi else None
         }
 
         return output

@@ -1,4 +1,4 @@
-import os
+import time, os
 import logging
 import glob, copy
 import pickle
@@ -12,6 +12,7 @@ import lightning
 
 # Library code
 from utils.train_utils import load_checkpoint
+from model.modules import get_atom14_coords
 from data.protein import to_pdb, Protein, from_pdb_file
 from data.features import make_atom14_masks, atom14_to_atom37
 from data.top2018_dataset import transform_structure, collate_fn
@@ -43,19 +44,32 @@ def replace_protein_sequence(protein, protein_name, new_seqs):
     return proteins
 
 
-def sample_epoch(model, batch, temperature, device, n_recycle=0):    
+def sample_epoch(ensemble, batch, temperature, device, n_recycle=0):    
     # Sampling epoch
-    model.eval()
-    with torch.no_grad():
-        # Move to device
-        batch = batch.to(device)
+    model_logits = []
+    for model in ensemble:
+        model.eval()
+        with torch.no_grad():
+            # Move to device
+            batch = batch.to(device)
         
-        # Sample the model
-        results = model.sample(batch, temperature=temperature, n_recycle=n_recycle)
+            # Sample the model
+            results = model.sample(batch, temperature=temperature, n_recycle=n_recycle)
 
-        # Add batch information
-        results.update(batch.to_dict())
-        
+            # Get the final logits
+            model_logits.append(results['chi_logits'])
+            
+    # Perform ensemble averaging
+    logits = torch.stack(model_logits, dim=-1)
+    logits = torch.mean(logits, dim=-1)
+    chi_pred = model._chi_prediction_from_probs(torch.nn.functional.softmax(logits, dim=-1), results.get('chi_bin_offset', None))
+    aatype_chi_mask = torch.tensor(rc.chi_mask_atom14, dtype=torch.float32, device=chi_pred.device)[batch.S]
+    chi_pred = aatype_chi_mask * chi_pred
+    atom14_xyz = get_atom14_coords(batch.X, batch.S, batch.BB_D, chi_pred)
+
+    results['final_X'] = atom14_xyz
+    results.update(batch.to_dict())
+    
     return results
 
 
@@ -88,26 +102,30 @@ def pdbs_from_prediction(sample_results) -> Sequence[str]:
     
     return proteins
 
-@hydra.main(version_base=None, config_path="./config", config_name="inference")
+@hydra.main(version_base=None, config_path="./config", config_name="inference_ensemble")
 def main(cfg: DictConfig) -> None:
-    
-    # Get the config used when running experiment
-    with open(os.path.join(cfg.inference.weights_path, f'{cfg.inference.model_name}_config.pickle'), 'rb') as f:
-        exp_cfg = pickle.load(f)
-        
     # Set up RNG and device
     seed = lightning.seed_everything(cfg.inference.seed)
     logger.info(f"Using seed={seed} for RNG.")
     device = torch.device("cuda:0" if (torch.cuda.is_available() and not cfg.inference.force_cpu) else "cpu")
-    
-    # Load model with same config  
-    model: torch.nn.Module = hydra.utils.instantiate(exp_cfg.model).to(device)
-    
-    # Find the checkpoint to load into model
-    checkpoint = os.path.join(cfg.inference.weights_path, f'{cfg.inference.model_name}_ckpt.pt')
 
-    # Load the best checkpoint
-    load_checkpoint(checkpoint, model)
+    ensemble = []
+    for model_name in cfg.inference.model_names:
+        # Get the config used when running experiment
+        with open(os.path.join(cfg.inference.weights_path, f'{model_name}_config.pickle'), 'rb') as f:
+            exp_cfg = pickle.load(f)
+            
+        # Load model with same config  
+        model: torch.nn.Module = hydra.utils.instantiate(exp_cfg.model).to(device)
+    
+        # Find the best checkpoint to load into model
+        checkpoint = os.path.join(cfg.inference.weights_path, f'{model_name}_ckpt.pt')
+
+        # Load the best checkpoint
+        load_checkpoint(checkpoint, model)
+
+        # Add model to ensemble
+        ensemble.append(model)
 
     # Get the dataset
     pdb_files = glob.glob(os.path.join(cfg.inference.pdb_path, '*.pdb'))
@@ -157,7 +175,7 @@ def main(cfg: DictConfig) -> None:
         batch = collate_fn(proteins)
         
         # Run sample
-        sample_results = sample_epoch(model, batch, cfg.inference.temperature, device, n_recycle=cfg.inference.n_recycle)
+        sample_results = sample_epoch(ensemble, batch, cfg.inference.temperature, device, n_recycle=cfg.inference.n_recycle)
 
         # Get full atom proteins
         protein_strings = pdbs_from_prediction(sample_results)
@@ -168,8 +186,9 @@ def main(cfg: DictConfig) -> None:
             
             # Write sampled pdb
             print('Finished packing:', pdb_out)
-            with open(pdb_out, 'w') as f:
+            with open(os.path.join(cfg.inference.output_dir, protein_name + '.pdb'), 'w') as f:
                 f.write(protein_string)
+        
 
 if __name__ == "__main__":
     main()

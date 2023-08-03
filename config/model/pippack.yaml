@@ -6,24 +6,15 @@ num_mpnn_layers: 3
 k_neighbors: 30 
 augment_eps: 0. 
 use_ipmp: False 
+use_ipmp_ipa: False
 n_points: null
 dropout: 0.1
-af2_relpos: True
 act: relu
-mlp_out: True
 predict_bin_chi: True
 n_chi_bins: 72
-sequential_chi: False
 predict_offset: True
-use_true_relpos: True
 position_scale: 1.0
-recycle_nodes: False
-recycle_edges: False
-bb_dihedral: null
 loss:
-  use_clash_loss: False
   chi_nll_loss_weight: 1.0
   chi_mse_loss_weight: 1.0
   offset_mse_loss_weight: 1.0
-  clash_loss_weight: 0.0
-  rmsd_loss_weight: 0.0

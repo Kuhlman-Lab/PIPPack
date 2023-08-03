@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH -J inferencing_pippack
+#SBATCH -J inferencing_pippack_ensemble
 #SBATCH -p volta-gpu
 #SBATCH -N 1
 #SBATCH -n 1
@@ -15,8 +15,7 @@
 source ~/.bashrc
 module add cuda
 conda activate pippack
-python /nas/longleaf/home/nzrandol/kuhl_lab/users/nzrandol/PIPPack/inference.py \
-       inference.model_name=pippack_model_1 \
+python /nas/longleaf/home/nzrandol/kuhl_lab/users/nzrandol/PIPPack/ensembled_inference.py \
        inference.pdb_path=/proj/kuhl_lab/users/nzrandol/PIPPack/sampled_pdbs/top2018_test_pdbs \
        inference.seed=1234 \
        inference.n_recycle=3

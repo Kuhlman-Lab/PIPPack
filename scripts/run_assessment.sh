@@ -15,10 +15,10 @@
 source ~/.bashrc
 module add cuda
 conda activate pippack
-python /nas/longleaf/home/nzrandol/kuhl_lab/users/nzrandol/PIPPack/assess_packing.py \
-       /nas/longleaf/home/nzrandol/kuhl_lab/users/nzrandol/PIPPack/test_pdbs \
-       /nas/longleaf/home/nzrandol/kuhl_lab/users/nzrandol/PIPPack/test_pdbs_packed \
-       --out_filename=packing_stats \
-       --sc_b_factor_cutoff=10000 \
+python /proj/kuhl_lab/users/nzrandol/PIPPack/assess_packing.py \
+       /proj/kuhl_lab/users/nzrandol/PIPPack/sampled_pdbs/top2018_test_pdbs \
+       /proj/kuhl_lab/users/nzrandol/PIPPack/sampled_pdbs/pippack_ipmp_r3X_bbDsc_noCrop/01 \
+       --out_filename=packing_stats_bf40 \
+       --sc_b_factor_cutoff=40 \
        --verbose \
        --convert_mse

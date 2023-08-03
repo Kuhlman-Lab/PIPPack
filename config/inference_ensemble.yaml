@@ -1,4 +1,4 @@
-# Default configuration for inference.
+# Default configuration for ensembled inference.
 
 defaults:
   - _self_
@@ -8,9 +8,12 @@ defaults:
 inference:
   # Inference arguments
   weights_path: /proj/kuhl_lab/users/nzrandol/PIPPack/model_weights/
-  model_name: pippack_model_1
+  model_names:
+    - pippack_model_1
+    - pippack_model_2
+    - pippack_model_3
   pdb_path: ???
-  output_dir: pippack_output
+  output_dir: pippack_ensemble_output
   n_recycle: 3
   temperature: 0.0
   force_cpu: False

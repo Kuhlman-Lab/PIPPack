@@ -318,14 +318,6 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
     SC_D_bin = (SC_D_bin * SC_D_mask + n_chi_bin * (1. - SC_D_mask))
     SC_D_bin_offset = SC_D_bin_offset * SC_D_mask
     
-    # Create binned representation of backbone dihedrals
-    bins5 = np.arange(0, 2 * torch.pi, 2 * torch.pi / 72) - torch.pi
-    BB_D_bin5 = np.argmin(np.abs(BB_D[..., None] - bins5), axis=-1)
-    BB_D_bin5 = (BB_D_bin5 * BB_D_mask + 72 * (1. - BB_D_mask))
-    bins10 = np.arange(0, 2 * torch.pi, 2 * torch.pi / 36) - torch.pi
-    BB_D_bin10 = np.argmin(np.abs(BB_D[..., None] - bins10), axis=-1)
-    BB_D_bin10 = (BB_D_bin10 * BB_D_mask + 36 * (1. - BB_D_mask))
-    
     # Lift dihedrals to unit circle with sin and cos
     BB_D_sincos = np.stack((np.sin(BB_D), np.cos(BB_D)), axis=-1)
     BB_D_sincos = BB_D_sincos * BB_D_mask[..., None]
@@ -342,8 +334,6 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
         residue_mask = torch.from_numpy(residue_mask).to(torch.float32), # [L]
         BB_D = torch.from_numpy(BB_D).to(torch.float32), # [L, 3]
         BB_D_sincos = torch.from_numpy(BB_D_sincos).to(torch.float32), # [L, 3, 2]
-        BB_D_bin5 = torch.from_numpy(BB_D_bin5).to(torch.int64), # [L, 3]
-        BB_D_bin10 = torch.from_numpy(BB_D_bin10).to(torch.int64), # [L, 3]
         BB_D_mask = torch.from_numpy(BB_D_mask).to(torch.float32), # [L, 3]
         SC_D = torch.from_numpy(SC_D).to(torch.float32), # [L, 4]
         SC_D_sincos = torch.from_numpy(SC_D_sincos).to(torch.float32), # [L, 4, 2]
@@ -379,15 +369,13 @@ def collate_fn(protein_batch):
         residue_mask = torch.stack([_maybe_pad(protein, "residue_mask") for protein in protein_batch]), # [B, L]
         BB_D = torch.stack([_maybe_pad(protein, "BB_D") for protein in protein_batch]), # [B, L, 3]
         BB_D_sincos = torch.stack([_maybe_pad(protein, "BB_D_sincos") for protein in protein_batch]), # [B, L, 3, 2]
-        BB_D_bin5 = torch.stack([_maybe_pad(protein, "BB_D_bin5") for protein in protein_batch]), # [B, L, 3]
-        BB_D_bin10 = torch.stack([_maybe_pad(protein, "BB_D_bin10") for protein in protein_batch]), # [B, L, 3]
         BB_D_mask = torch.stack([_maybe_pad(protein, "BB_D_mask") for protein in protein_batch]), # [B, L, 3]
         SC_D = torch.stack([_maybe_pad(protein, "SC_D") for protein in protein_batch]), # [B, L, 4]
         SC_D_sincos = torch.stack([_maybe_pad(protein, "SC_D_sincos") for protein in protein_batch]), # [B, L, 4, 2]
         SC_D_bin = torch.stack([_maybe_pad(protein, "SC_D_bin") for protein in protein_batch]), # [B, L, 4]
         SC_D_bin_offset = torch.stack([_maybe_pad(protein, "SC_D_bin_offset") for protein in protein_batch]), # [B, L, 4]
         SC_D_mask = torch.stack([_maybe_pad(protein, "SC_D_mask") for protein in protein_batch]), # [B, L, 4]
-        SC_D_BF_mask = torch.stack([_maybe_pad(protein, "SC_D_BF_mask") for protein in protein_batch]), # [B, L, 4]  
+        SC_D_BF_mask = torch.stack([_maybe_pad(protein, "SC_D_BF_mask") for protein in protein_batch]), # [B, L, 4]
     )
     
     return batch

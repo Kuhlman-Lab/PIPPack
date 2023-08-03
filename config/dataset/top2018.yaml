@@ -5,7 +5,7 @@ filter_level: "mc"
 version: "2.01"
 seq_id: "40pc"
 n_chi_bins: 72
-crop_size: 400
+crop_size: null
 batch_size: 15
 num_workers: 0
 num_chains: -1

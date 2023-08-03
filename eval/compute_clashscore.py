@@ -3,12 +3,13 @@ import os, glob
 from functools import partial
 from multiprocessing import Pool, Manager
 
+
 clashscore = "/proj/kuhl_lab/MolProbity/molprobity/cmdline/clashscore"
 
 
 def _compute_clashscore(pdb_file, out_file, lock):
     # Write clash score to temporary file
-    tmp_file = f"tmp_clashscore_{os.getpid()}.txt"
+    tmp_file = os.path.join(os.path.dirname(out_file), f"tmp_clashscore_{os.getpid()}.txt")
     os.system(f'{clashscore} {pdb_file} | grep "clashscore =" > {tmp_file}')
     
     with lock:
@@ -33,7 +34,7 @@ def main(args):
             p.map(partial(_compute_clashscore, out_file=out_file, lock=lock), pdb_files)
             
     # Clean up
-    for f in glob.glob("tmp_clashscore_*.txt"):
+    for f in glob.glob(os.path.join(args.pdb_dir, "tmp_clashscore_*.txt")):
         os.remove(f)
 
 

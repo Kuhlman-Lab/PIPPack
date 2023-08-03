@@ -15,7 +15,7 @@ from pyrosetta.rosetta.protocols.minimization_packing import MinMover
 from pyrosetta.rosetta.core.scoring import fa_rep
 
 
-def sc_min_task(pdb_in, pdb_out, fa_rep_weight=0.55):
+def sc_min_task(pdb_in, pdb_out, fa_rep_weight=0.55, restrict_aa=[]):
     t0 = time.time()
 
     # Load initial pose
@@ -29,7 +29,9 @@ def sc_min_task(pdb_in, pdb_out, fa_rep_weight=0.55):
     # Set up MoveMap with only movable side chains
     movemap = MoveMap()
     movemap.set_bb(False)
-    movemap.set_chi(True)
+    for res in range(1, pose.total_residue() + 1):
+        if pose.residue(res).name3() not in restrict_aa:
+            movemap.set_chi(res, True)
         
     # Construct MinMover
     minmover = MinMover()
@@ -47,9 +49,9 @@ def sc_min_task(pdb_in, pdb_out, fa_rep_weight=0.55):
     print(f"Minimized side chains in {time.time() - t0:.3f} sec.")
 
 
-def safe_run(arg, fa_rep_weight=0.55):
+def safe_run(arg, fa_rep_weight=0.55, restrict_aa=[]):
     try:
-        sc_min_task(*arg, fa_rep_weight=fa_rep_weight)
+        sc_min_task(*arg, fa_rep_weight=fa_rep_weight, restrict_aa=restrict_aa)
     except Exception:
         print(f"Skipping {arg}...")
 
@@ -71,7 +73,7 @@ def main(args):
     
     # Run minimization
     with Pool(args.n_thread) as p:
-        p.map(partial(safe_run, fa_rep_weight=args.fa_rep), work_list)
+        p.map(partial(safe_run, fa_rep_weight=args.fa_rep, restrict_aa=args.restrict_aa), work_list)
 
         
 if __name__ == "__main__":
@@ -92,10 +94,15 @@ if __name__ == "__main__":
     parser.add_argument("--overwrite",
                         action="store_true", 
                         help="Optionally overwrite previous results.")
+    parser.add_argument("--restrict_aa",
+                        type=str, default='',
+                        help="Comma-separated list of which amino acids to restrict from minimization.")
     args = parser.parse_args()
 
     if args.out_dir is None:
         args.data_dir = args.data_dir[:-1] if args.data_dir[-1] == os.path.sep else args.data_dir
         args.out_dir = args.data_dir + f"_rosetta_min"
+
+    args.restrict_aa = args.restrict_aa.split(',')
 
     main(args)
