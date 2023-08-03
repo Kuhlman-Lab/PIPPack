@@ -286,6 +286,14 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
             # Truncate appropriate features.
             for feat in ['aatype', 'atom_positions', 'atom_mask', 'residue_index', 'chain_index', 'b_factors']:
                 protein[feat] = protein[feat][start_idx:(start_idx + crop_size)]
+                
+    # Update residue_index based on chain_index (adding 100-residue gap)
+    if len(np.unique(protein['chain_index'])) > 1:
+        index_offset = 0
+        for chain_idx in np.unique(protein['chain_index'])[:-1]:
+            index_offset += max(protein['residue_index'][protein['chain_index'] == chain_idx])
+            index_offset += 100
+            protein['residue_index'][protein['chain_index'] == chain_idx + 1] += index_offset
     
     # Create all necessary residue features.
     X = protein["atom_positions"]
