@@ -3,7 +3,7 @@
 #SBATCH -J rosetta_packer
 #SBATCH -p volta-gpu
 #SBATCH -N 1
-#SBATCH -n 4
+#SBATCH -n 1
 #SBATCH --mem=32g
 #SBATCH -t 03-00:00:00
 #SBATCH --qos gpu_access
@@ -16,5 +16,5 @@ source ~/.bashrc
 module load gcc
 module load cuda
 conda activate pyrosetta_env
-python /proj/kuhl_lab/users/nzrandol/PIPPack/eval/rosetta_benchmark.py \
-    /proj/kuhl_lab/users/nzrandol/PIPPack/test_pdbs
+python /proj/kuhl_lab/users/nzrandol/PIPPack/eval/rosetta_packer.py \
+    /proj/kuhl_lab/users/nzrandol/PIPPack/sampled_pdbs/top2018_test_pdbs

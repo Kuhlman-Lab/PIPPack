@@ -3,12 +3,13 @@ import os, glob
 from functools import partial
 from multiprocessing import Pool, Manager
 
+
 rotamer_test = "/nas/longleaf/home/nzrandol/kuhl_lab/MolProbity/molprobity/cmdline/rotamer-test"
 
 
 def _eval_rotamers(pdb_file, out_file, lock):
     # Write clash score to temporary file
-    tmp_file = f"tmp_eval_rotamers_{os.getpid()}.txt"
+    tmp_file = os.path.join(os.path.dirname(out_file), f"tmp_eval_rotamers_{os.getpid()}.txt")
     os.system(f'{rotamer_test} {pdb_file} | grep "\[eval\] =>" > {tmp_file}')
     
     with lock:
@@ -35,7 +36,7 @@ def main(args):
             p.map(partial(_eval_rotamers, out_file=out_file, lock=lock), pdb_files)
             
     # Clean up
-    for f in glob.glob("tmp_eval_rotamers_*.txt"):
+    for f in glob.glob(os.path.join(args.pdb_dir, "tmp_eval_rotamers_*.txt")):
         os.remove(f)
 
 

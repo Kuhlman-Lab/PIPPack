@@ -2,6 +2,6 @@ _target_: data.bc40_dataset.BC40DataModule
 data_dir: "~/kuhl_lab/users/nzrandol/protein-datasets/"
 removal_list_file: "~/kuhl_lab/users/nzrandol/protein-datasets/casp/bc40_overlap.txt"
 n_chi_bins: 72
-crop_size: 400
+crop_size: null
 batch_size: 15
 num_workers: 0
