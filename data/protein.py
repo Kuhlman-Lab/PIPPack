@@ -16,7 +16,7 @@
 import dataclasses
 import io
 import gzip
-from typing import Optional
+from typing import Optional, Sequence, Union
 import data.residue_constants as rc
 from Bio.PDB import PDBParser
 import numpy as np
@@ -63,7 +63,7 @@ class Protein:
             )
 
 
-def from_pdb_string(pdb_str: str, model_idx: int = 0, chain_id: Optional[str] = None, discard_water: bool = True, mse_to_met: bool = False, ignore_non_std: bool = True) -> Protein:
+def from_pdb_string(pdb_str: str, model_idx: int = 0, chain_id: Optional[Union[str, Sequence[str]]] = None, discard_water: bool = True, mse_to_met: bool = False, ignore_non_std: bool = True) -> Protein:
     """Takes a PDB string and constructs a Protein object.
 
     WARNING: All non-standard residue types will be converted into UNK. All
@@ -73,8 +73,8 @@ def from_pdb_string(pdb_str: str, model_idx: int = 0, chain_id: Optional[str] = 
         pdb_str: The contents of the pdb file
         model_idx: The specific model in the PDB file that will be
             parsed. This is 0-indexed. Default is 0.
-        chain_id: If chain_id is specified (e.g. A), then only that chain
-            is parsed. Otherwise all chains are parsed.
+        chain_id: If chain_id is specified (e.g. A), then only those chains
+            are parsed. Otherwise all chains are parsed.
         discard_water: Boolean specifying whether to ignore water molecules.
             Default is True.
         mse_to_met: Boolean specifying whether to convert MSE residues to MET residues.
@@ -97,6 +97,8 @@ def from_pdb_string(pdb_str: str, model_idx: int = 0, chain_id: Optional[str] = 
         model = models[model_idx]
     else:
         model = models[0]
+    if isinstance(chain_id, str):
+        chain_id = [chain_id]
 
     atom_positions = []
     aatype = []
@@ -106,7 +108,7 @@ def from_pdb_string(pdb_str: str, model_idx: int = 0, chain_id: Optional[str] = 
     b_factors = []
     insertion_code_offset = 0
     for chain in sorted(model, key=lambda x: x.id):
-        if chain_id is not None and chain.id != chain_id:
+        if chain_id is not None and chain.id not in chain_id:
             continue
         for res in sorted(chain, key=lambda x: x.id[1]):
             # Discard water residues.     
