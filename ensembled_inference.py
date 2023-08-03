@@ -1,8 +1,7 @@
-import time, os
+import os
 import logging
-import glob, copy
+import glob
 import pickle
-import numpy as np
 import torch
 import hydra
 from omegaconf import DictConfig
@@ -13,35 +12,13 @@ import lightning
 # Library code
 from utils.train_utils import load_checkpoint
 from model.modules import get_atom14_coords
-from data.protein import to_pdb, Protein, from_pdb_file
-from data.features import make_atom14_masks, atom14_to_atom37
+from data.protein import from_pdb_file
 from data.top2018_dataset import transform_structure, collate_fn
 import data.residue_constants as rc
+from inference import replace_protein_sequence, pdbs_from_prediction
 
 
 logger = logging.getLogger(__name__)
-
-
-def replace_protein_sequence(protein, protein_name, new_seqs):
-    proteins = []
-    
-    for i, seq in enumerate(new_seqs):
-        # Replace protein sequence info
-        new_protein = copy.deepcopy(protein)
-        aatype = [rc.restype_order[res] for res in seq]
-        new_protein["aatype"] = np.array(aatype).astype(np.int64)
-        
-        # Rebuild atom mask
-        atom_mask = []
-        for res in seq:
-            res_atoms = rc.restype_name_to_atom14_names[rc.restype_1to3[res]]
-            res_mask = [1 if atom != "" else 0 for atom in res_atoms]
-            atom_mask.append(res_mask)
-        new_protein["atom_mask"] = np.array(atom_mask).astype(np.float32)
-        
-        proteins.append((protein_name + f"_{i}", new_protein))
-        
-    return proteins
 
 
 def sample_epoch(ensemble, batch, temperature, device, n_recycle=0):    
@@ -71,36 +48,6 @@ def sample_epoch(ensemble, batch, temperature, device, n_recycle=0):
     results.update(batch.to_dict())
     
     return results
-
-
-def pdbs_from_prediction(sample_results) -> Sequence[str]:
-
-    # Get the protein components.
-    S = sample_results["S"]
-    residue_index = sample_results["residue_index"]
-    pred_xyz = sample_results["final_X"]
-    
-    # Convert atom14 coordinates to atom37 coordinates
-    residx_atom37_to_atom14, atom37_atom_exists, _, _ = make_atom14_masks(S)
-    pred_xyz = atom14_to_atom37(pred_xyz, residx_atom37_to_atom14, atom37_atom_exists)
-
-    # Construct the components needed for the protein object
-    proteins = []
-    for i in range(S.shape[0]):
-        aatype = S[i].cpu().numpy()
-        atom_positions = pred_xyz[i].cpu().numpy()
-        atom_mask = (np.sum(atom_positions, axis=-1) != 0.0).astype(np.int32)
-        chain_index = np.zeros(aatype.shape)
-        residue_idx = residue_index[i].cpu().numpy()
-        b_factors = np.zeros(atom_mask.shape)
-
-        protein = Protein(aatype=aatype, atom_positions=atom_positions, atom_mask=atom_mask, residue_index=residue_idx, 
-                        chain_index=chain_index, b_factors=b_factors)
-
-        protein_string = to_pdb(protein)
-        proteins.append(protein_string)
-    
-    return proteins
 
 @hydra.main(version_base=None, config_path="./config", config_name="inference_ensemble")
 def main(cfg: DictConfig) -> None:
