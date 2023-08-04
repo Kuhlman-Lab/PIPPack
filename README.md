@@ -4,6 +4,12 @@ Implementation of Protein Invariant Point Packer (PIPPack)
 PIPPack is a graph neural network (GNN) that utilizes geometry-aware invariant point message passing (IPMP) updates and recycling to rapidly generate accurate protein side chains.
 ![PIPPack Architecture](./images/pippack_architecture.png)
 
+## Quickstart
+To get started right in your browser, click this button to open the PIPPack notebook in Google Colab:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Kuhlman-Lab/PIPPack/blob/main/notebooks/PIPPack.ipynb)
+
+Note that this notebook is still a WIP, with a number of features still to be implemented.
+
 ## Getting started
 To build the environment from scratch:
 ```
