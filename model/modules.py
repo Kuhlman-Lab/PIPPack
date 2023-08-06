@@ -27,7 +27,7 @@ def gather_nodes(nodes, neighbor_idx):
     # Flatten and expand indices per batch [...,N,K] => [...,NK] => [...,NK,C]
     neighbors_flat = neighbor_idx.view((*neighbor_idx.shape[:-2], -1))
     for _ in range(n_feat_dims):
-        neighbors_flat.unsqueeze_(-1)
+        neighbors_flat = neighbors_flat.unsqueeze(-1)
     neighbors_flat = neighbors_flat.expand(*([-1] * (1 + is_batched)), *nodes.shape[-n_feat_dims:])
     
     # Gather and re-pack
@@ -110,7 +110,6 @@ class MPNNLayer(nn.Module):
             self.dropout2 = nn.Dropout(dropout)
             self.norm2 = nn.LayerNorm(num_hidden)
             
-
     def forward(self, h_V, h_E, E_idx=None, mask_V=None, mask_attend=None):
         """ Parallel computation of full transformer layer """
         
