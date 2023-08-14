@@ -17,8 +17,8 @@ def main(args):
     import os.path
     import subprocess
     from concurrent.futures import ProcessPoolExecutor    
-    from utils import worker_init_fn, get_pdbs, loader_pdb, build_training_clusters, PDB_dataset, StructureDataset, StructureLoader
-    from model_utils import featurize, loss_smoothed, loss_nll, get_std_opt, ProteinMPNN
+    from proteinmpnn.utils import worker_init_fn, get_pdbs, loader_pdb, build_training_clusters, PDB_dataset, StructureDataset, StructureLoader
+    from proteinmpnn.model_utils import featurize, loss_smoothed, loss_nll, get_std_opt, ProteinMPNN
 
     if args.seed is not None:
         torch.backends.cudnn.deterministic = True
