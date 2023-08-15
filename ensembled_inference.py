@@ -3,6 +3,7 @@ import logging
 import glob
 import pickle
 import torch
+import torch.nn.functional as F
 import hydra
 from omegaconf import DictConfig
 torch.cuda.empty_cache()
@@ -36,10 +37,31 @@ def sample_epoch(ensemble, batch, temperature, device, n_recycle=0):
             # Get the final logits
             model_logits.append(results['chi_logits'])
             
-    # Perform ensemble averaging
+    # Perform ensemble averaging with temperature sampling
     logits = torch.stack(model_logits, dim=-1)
     logits = torch.mean(logits, dim=-1)
-    chi_pred = model._chi_prediction_from_probs(torch.nn.functional.softmax(logits, dim=-1), results.get('chi_bin_offset', None))
+    if temperature > 0.0:
+        logits = logits / temperature
+        chi_probs = F.softmax(logits, -1)
+        chi_bin = torch.multinomial(chi_probs.view(-1, logits.shape[-1]), 1).view(*logits.shape[:2], -1).squeeze(-1)
+    else:
+        chi_bin = torch.argmax(F.softmax(logits, -1), dim=-1)
+    
+    chi_bin_one_hot = torch.nn.functional.one_hot(chi_bin, num_classes=model.n_chi_bins + 1)
+
+    # Determine actual chi value from bin
+    chi_bin_rad = torch.cat((torch.arange(-torch.pi, torch.pi, 2 * torch.pi / model.n_chi_bins, device=chi_bin.device), torch.tensor([0]).to(device=chi_bin.device)))
+    pred_chi_bin = torch.sum(chi_bin_rad.view(*([1] * len(chi_bin.shape)), -1) * chi_bin_one_hot, dim=-1)
+    
+    # Add bin offset
+    chi_bin_offset = results.get('chi_bin_offset', None)
+    if chi_bin_offset is not None:
+        bin_sample_update = chi_bin_offset
+    else:
+        bin_sample_update = (2 * torch.pi / model.n_chi_bins) * torch.rand(chi_bin.shape, device=chi_bin.device)
+    chi_pred = pred_chi_bin + bin_sample_update
+    
+    # Construct final atom14 coordinates
     aatype_chi_mask = torch.tensor(rc.chi_mask_atom14, dtype=torch.float32, device=chi_pred.device)[batch.S]
     chi_pred = aatype_chi_mask * chi_pred
     atom14_xyz = get_atom14_coords(batch.X, batch.S, batch.BB_D, chi_pred)
