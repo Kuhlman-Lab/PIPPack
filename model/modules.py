@@ -663,9 +663,9 @@ class ProteinFeatures(nn.Module):
         O = X[:, :, 3, :]
         Cb = self._impute_CB(N, Ca, C)
         sc_atoms = X[..., 5:, :]
-        X = torch.stack((N, Ca, C, O, Cb), dim=-2)
-        X = torch.cat((X, sc_atoms), dim=-2) 
-        RBF_all = self._atomic_distances(X, E_idx)
+        X2 = torch.stack((N, Ca, C, O, Cb), dim=-2)
+        X2 = torch.cat((X2, sc_atoms), dim=-2) 
+        RBF_all = self._atomic_distances(X2, E_idx)
         
         E = torch.cat((E_positional, RBF_all), -1)
             
@@ -685,7 +685,7 @@ class ProteinFeatures(nn.Module):
         E = self.edge_embedding(E)
         E = self.norm_edges(E)
 
-        return V, E, E_idx
+        return V, E, E_idx, X
 
 
 def get_atom14_coords(X, S, BB_D, SC_D):
@@ -965,7 +965,7 @@ class PIPPack(nn.Module):
         residue_index = batch.residue_index
 
         # Embed initial features
-        V, E, E_idx = self.features(X, S, BB_D, mask, residue_index)
+        V, E, E_idx, X = self.features(X, S, BB_D, mask, residue_index)
         h_V = self.W_v(V)
         h_E = self.W_e(E)
 
@@ -1063,7 +1063,7 @@ class PIPPack(nn.Module):
         residue_index = batch.residue_index
         
         # Prepare node and edge embeddings
-        V, E, E_idx = self.features(X, S, BB_D, mask, residue_index)
+        V, E, E_idx, X = self.features(X, S, BB_D, mask, residue_index)
         h_V = self.W_v(V)
         h_E = self.W_e(E)
 
