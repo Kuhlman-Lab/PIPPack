@@ -14,6 +14,9 @@ predict_bin_chi: True
 n_chi_bins: 72
 predict_offset: True
 position_scale: 1.0
+recycle_strategy: mode
+recycle_SC_D_sc: False
+recycle_SC_D_probs: False
 loss:
   chi_nll_loss_weight: 1.0
   chi_mse_loss_weight: 1.0
