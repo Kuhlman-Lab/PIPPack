@@ -829,8 +829,12 @@ class PIPPack(nn.Module):
 
     def _chi_prediction_from_probs(self, chi_probs, chi_bin_offset=None, strategy="mode"):        
         # One-hot encode predicted chi bin
-        chi_bin = torch.argmax(chi_probs, dim=-1)
-        chi_bin_one_hot = F.one_hot(chi_bin, num_classes=self.n_chi_bins + 1)
+        if strategy == "mode":
+            chi_bin = torch.argmax(chi_probs, dim=-1)
+            chi_bin_one_hot = F.one_hot(chi_bin, num_classes=self.n_chi_bins + 1)
+        elif strategy == "sample":
+            chi_bin = torch.multinomial(chi_probs.view(-1, chi_probs.shape[-1]), num_samples=1).squeeze(-1).view(*chi_probs.shape[:-1])
+            chi_bin_one_hot = F.one_hot(chi_bin, num_classes=self.n_chi_bins + 1)
 
         # Determine actual chi value from bin
         chi_bin_rad = torch.cat((torch.arange(-torch.pi, torch.pi, 2 * torch.pi / self.n_chi_bins, device=chi_bin.device), torch.tensor([0]).to(device=chi_bin.device)))
@@ -939,7 +943,7 @@ class PIPPack(nn.Module):
                 
                 # Create coordinates for prediction
                 if self.predict_bin_chi:
-                    chi_pred = self._chi_prediction_from_probs(outputs['chi_log_probs'], outputs.get('chi_bin_offset', None), strategy=self.recycle_strategy)
+                    chi_pred = self._chi_prediction_from_probs(outputs['chi_probs'], outputs.get('chi_bin_offset', None), strategy=self.recycle_strategy)
                 else:
                     chi_pred = outputs['norm_chi'] 
                     chi_pred = torch.atan2(chi_pred[..., 0], chi_pred[..., 1])
@@ -957,7 +961,7 @@ class PIPPack(nn.Module):
         
         # Create coordinates for prediction
         if self.predict_bin_chi:
-            chi_pred = self._chi_prediction_from_probs(outputs['chi_log_probs'], outputs.get('chi_bin_offset', None))
+            chi_pred = self._chi_prediction_from_probs(outputs['chi_probs'], outputs.get('chi_bin_offset', None))
         else:
             chi_pred = outputs['norm_chi']    
             chi_pred = torch.atan2(chi_pred[..., 0], chi_pred[..., 1])
