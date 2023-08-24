@@ -1043,7 +1043,7 @@ class PIPPack(nn.Module):
         prevs = {
             "pred_X": torch.zeros_like(batch.X),
             "pred_SC_D": torch.zeros_like(batch.SC_D),
-            "pred_SC_D_probs": torch.zeros((*batch.S.shape, 4, self.n_chi_bins), device=batch.S.device),
+            "pred_SC_D_probs": torch.zeros((*batch.S.shape, 4, self.n_chi_bins + 1), device=batch.S.device),
         }
         
         with torch.no_grad():
