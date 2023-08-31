@@ -203,3 +203,71 @@ def get_packing_stats(dir, stats_file="packing_stats.pkl"):
         stats = pickle.load(f)
         
     return stats
+
+
+def get_stats_mean_std(dir, subdirs=[], stats_file="packing_stats.pkl"):
+    if subdirs == []:
+        subdirs = [f for f in os.listdir(dir) if os.path.isdir(f)]
+
+    def recursive_dict_append(d1, d2):
+        for key in d1:
+            if isinstance(d1[key], dict):
+                recursive_dict_append(d1[key], d2[key])
+            else:
+                d2[key].append(d1[key])
+                
+        return d2
+
+    def leaf_list_clone(d1, d2):
+        for key in d1:
+            if isinstance(d1[key], dict):
+                d2[key] = {}
+                leaf_list_clone(d1[key], d2[key])
+            else:
+                d2[key] = []
+                
+        return d2
+    
+    def leaf_mean_clone(d):
+        d2 = {}
+        for key in d:
+            if isinstance(d[key], dict):
+                d2[key] = leaf_mean_clone(d[key])
+            elif isinstance(d[key], list):
+                d2[key] = np.mean(d[key], axis=0)
+            else:
+                d2[key] = np.mean(d[key])
+        
+        return d2
+        
+    def leaf_std_clone(d):
+        d2 = {}
+        for key in d:
+            if isinstance(d[key], dict):
+                d2[key] = leaf_std_clone(d[key])
+            elif isinstance(d[key], list):
+                d2[key] = np.std(d[key], axis=0)
+            else:
+                d2[key] = np.std(d[key])
+        
+        return d2
+    
+    total_stats = {}
+    for subdir in subdirs:
+        stats = get_packing_stats(os.path.join(dir, subdir), stats_file)
+        if total_stats == {}:
+            total_stats = leaf_list_clone(stats, total_stats)
+        
+        total_stats = recursive_dict_append(stats, total_stats)
+        
+    clashscores = []
+    for subdir in subdirs:
+        clashscores.append(get_mean_clashscore(os.path.join(dir, subdir)))
+        
+    mean_stats = leaf_mean_clone(total_stats)
+    mean_clashscore = np.mean(clashscores)
+    
+    std_stats = leaf_std_clone(total_stats)
+    std_clashscore = np.std(clashscores)
+        
+    return (mean_stats, std_stats), (mean_clashscore, std_clashscore)
