@@ -320,9 +320,9 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
     SC_D_BF_mask = SC_D_BF_mask * residue_mask[..., None]
         
     # Create binned representation of sidechain dihedrals
-    bins = np.arange(0, 2 * torch.pi, 2 * torch.pi / n_chi_bin) - torch.pi 
-    SC_D_bin = np.argmin(np.abs(SC_D[..., None] - bins), axis=-1)
-    SC_D_bin_offset = np.min(np.abs(SC_D[..., None] - bins), axis=-1)
+    SC_D_bin = (SC_D + np.pi) // (2 * np.pi / n_chi_bin)
+    SC_D_bin = np.nan_to_num(SC_D_bin) # Convert nans to 0 before masking and converting to int64
+    SC_D_bin_offset = (SC_D + np.pi) % (2 * np.pi / n_chi_bin)
     SC_D_bin = (SC_D_bin * SC_D_mask + n_chi_bin * (1. - SC_D_mask))
     SC_D_bin_offset = SC_D_bin_offset * SC_D_mask
     
