@@ -106,7 +106,7 @@ def main(cfg: DictConfig) -> None:
         
         with open(fasta_files[0], 'r') as f:
             lines = f.readlines()
-        new_seqs = [line.strip() for line in lines if line[0] != ">" and line]
+        new_seqs = [line.strip().split('/') for line in lines if line[0] != ">" and line]
         
         proteins = replace_protein_sequence(vars(from_pdb_file(pdb_files[0], mse_to_met=True)), os.path.basename(pdb_files[0])[:-4], new_seqs)
     else: 
