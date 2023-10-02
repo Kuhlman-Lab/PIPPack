@@ -23,9 +23,9 @@ def get_pdb_targets_from_dir(dir: str, tag: str = '') -> Sequence[str]:
 def get_alt_CH(CH: torch.Tensor, S: torch.Tensor, pseudo_periodic: bool = False, return_periodic_chi: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     # Determine which residues have a periodic chi angle.
     if pseudo_periodic:
-        periodic_chi = torch.tensor(rc.chi_pseudo_pi_periodic)[S.long()]
+        periodic_chi = torch.tensor(rc.chi_pseudo_pi_periodic, device=S.device)[S.long()]
     else:
-        periodic_chi = torch.tensor(rc.chi_pi_periodic)[S.long()]
+        periodic_chi = torch.tensor(rc.chi_pi_periodic, device=S.device)[S.long()]
     
     # Get alternative chis.
     alt_CH = CH.clone()
@@ -37,23 +37,23 @@ def get_alt_CH(CH: torch.Tensor, S: torch.Tensor, pseudo_periodic: bool = False,
         return alt_CH
 
 
-def compute_chi_error(native_protein: Protein, decoy_protein: Protein, sc_b_factor_cutoff: float = 1000, compute_pseudo_ae: bool = False) -> Dict[str, torch.Tensor]:
+def compute_chi_error(native_protein: Protein, decoy_protein: Protein, sc_b_factor_cutoff: float = 1000, compute_pseudo_ae: bool = False, device=torch.device('cpu')) -> Dict[str, torch.Tensor]:
     # Get dihedral angles for native.
-    native_X = torch.from_numpy(native_protein.atom_positions).clone()
-    native_S = torch.from_numpy(native_protein.aatype).clone()
+    native_X = torch.from_numpy(native_protein.atom_positions).clone().to(device=device)
+    native_S = torch.from_numpy(native_protein.aatype).clone().to(device=device)
     native_CH, native_CH_mask = calc_sc_dihedrals(native_X, native_S)
     # Include b_factor mask for native_protein.
-    native_BF = torch.from_numpy(native_protein.b_factors).clone()
+    native_BF = torch.from_numpy(native_protein.b_factors).clone().to(device=device)
     native_CH_mask *= chi_mask_from_b_factors(native_S, native_BF, sc_b_factor_cutoff)
     
     # Get dihedral angles and alternatives for decoy.
-    decoy_X = torch.from_numpy(decoy_protein.atom_positions).clone()
-    decoy_S = torch.from_numpy(decoy_protein.aatype).clone()
+    decoy_X = torch.from_numpy(decoy_protein.atom_positions).clone().to(device=device)
+    decoy_S = torch.from_numpy(decoy_protein.aatype).clone().to(device=device)
     decoy_CH, decoy_CH_mask = calc_sc_dihedrals(decoy_X, decoy_S)
     decoy_alt_CH, periodic_CH = get_alt_CH(decoy_CH, decoy_S, return_periodic_chi=True)
     
     # Compute a rotamer mask. If all chi angles aren't present, don't use that residue for rotamer recovery.
-    chi_aatype_mask = torch.tensor(rc.chi_mask_atom14)[native_S]
+    chi_aatype_mask = torch.tensor(rc.chi_mask_atom14).to(device=device)[native_S]
     chi_present_mask = native_CH_mask * decoy_CH_mask
     rotamer_mask = torch.sum(chi_aatype_mask, -1) == torch.sum(chi_present_mask, -1)
     rotamer_mask[torch.sum(chi_aatype_mask, -1) == 0] = 0.
@@ -96,9 +96,9 @@ def compute_chi_error(native_protein: Protein, decoy_protein: Protein, sc_b_fact
     return chi_error
 
 
-def compute_centrality(protein: Protein, basis_atom: str = "CB", threshold: float = 10.0, backup_atom: str = "CA") -> torch.Tensor:
+def compute_centrality(protein: Protein, basis_atom: str = "CB", threshold: float = 10.0, backup_atom: str = "CA", device=torch.device('cpu')) -> torch.Tensor:
     # Get coordinates of atoms for centrality computation.
-    protein_X = torch.from_numpy(protein.atom_positions).clone()
+    protein_X = torch.from_numpy(protein.atom_positions).clone().to(device=device)
     coords = protein_X[..., rc.atom_order[basis_atom], :]
     coords[~torch.isfinite(torch.sum(coords, dim=-1))] = protein_X[..., rc.atom_order[backup_atom], :][~torch.isfinite(torch.sum(coords, dim=-1))]
     
@@ -112,23 +112,23 @@ def compute_centrality(protein: Protein, basis_atom: str = "CB", threshold: floa
 # TODO: ADD ARGUMENT THAT COMPUTES BASED ON B-FACTOR MASK
 # COMPARE ATTNPACKER EXAMPLE TO THIS CODE
 # SHOULD RMSD INCLUDE CB RMSD??
-def compute_sc_rmsd(native_protein: Protein, decoy_protein: Protein, sc_b_factor_cutoff: float = 1000, compute_pseudo_rmsd: bool = False, per_res: bool = True) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+def compute_sc_rmsd(native_protein: Protein, decoy_protein: Protein, sc_b_factor_cutoff: float = 1000, compute_pseudo_rmsd: bool = False, per_res: bool = True, device=torch.device('cpu')) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     # Compute atom deviation based on original coordinates
-    native_X = torch.from_numpy(native_protein.atom_positions).clone()
-    decoy_X = torch.from_numpy(decoy_protein.atom_positions).clone()
+    native_X = torch.from_numpy(native_protein.atom_positions).clone().to(device=device)
+    decoy_X = torch.from_numpy(decoy_protein.atom_positions).clone().to(device=device)
     atom_deviation = torch.sum(torch.square(native_X - decoy_X), dim=-1)
     
     # Compute atom deviation based on alternative coordinates
-    decoy_S = torch.from_numpy(decoy_protein.aatype).clone()
+    decoy_S = torch.from_numpy(decoy_protein.aatype).clone().to(device=device)
     decoy_renamed_X = get_renamed_coords(decoy_X, decoy_S)
     renamed_atom_deviation = torch.sum(torch.square(native_X - decoy_renamed_X), dim=-1)
     
     # Get atom mask, including masked backbone atoms
-    atom_mask = torch.from_numpy(native_protein.atom_mask).clone()
-    atom_mask *= torch.from_numpy(decoy_protein.atom_mask)
+    atom_mask = torch.from_numpy(native_protein.atom_mask).clone().to(device=device)
+    atom_mask *= torch.from_numpy(decoy_protein.atom_mask).to(device=device)
     atom_mask[..., :4] = 0.0  # N, CA, C, O
     # Include b_factors from native_protein.
-    native_BF = torch.from_numpy(native_protein.b_factors).clone()
+    native_BF = torch.from_numpy(native_protein.b_factors).clone().to(device=device)
     atom_mask *= (native_BF < sc_b_factor_cutoff)
     
     # Compute RMSD
@@ -173,7 +173,7 @@ def compute_pairwise_vdw_table_and_masks(
 ):
     
     # Van der waals radii sum for each pair of atoms
-    atomtype_radius = torch.tensor(rc.restype_atom_radius_atom14, dtype=torch.float32)[sequence]
+    atomtype_radius = torch.tensor(rc.restype_atom_radius_atom14, dtype=torch.float32, device=sequence.device)[sequence]
     atomtype_radius = atomtype_radius[atom_mask.bool()]
     atom_pair_vdw_sum = atomtype_radius[:, None] + atomtype_radius[None, :]
     
@@ -259,8 +259,8 @@ def compute_pairwise_vdw_table_and_masks(
     # vdw_mask = vdw_mask * ~same_res_bonded_mask.bool()
 
     # Correct VDW tolerance for H-Bonds
-    hbond_donors = torch.tensor(rc.restype_hbond_donors_atom14)[sequence][atom_mask.bool()]
-    hbond_acceptors = torch.tensor(rc.restype_hbond_acceptors_atom14)[sequence][atom_mask.bool()]
+    hbond_donors = torch.tensor(rc.restype_hbond_donors_atom14, device=sequence.device)[sequence][atom_mask.bool()]
+    hbond_acceptors = torch.tensor(rc.restype_hbond_acceptors_atom14, device=sequence.device)[sequence][atom_mask.bool()]
     hbond_mask = (hbond_donors[:, None] * hbond_acceptors[None, :]).bool()
     hbond_mask = torch.logical_or(hbond_mask, hbond_mask.T)
     
@@ -273,6 +273,7 @@ def compute_clashes(
         global_tol_frac: Union[float, Sequence[float]] = 1.0,
         hbond_allowance: float = 0.6,
         eps: float = 1e-8,
+        device=torch.device('cpu')
     ):
     """
     Special Cases:
@@ -298,9 +299,9 @@ def compute_clashes(
 
     """
 
-    atom_positions = torch.from_numpy(protein.atom_positions).clone()
-    sequence = torch.from_numpy(protein.aatype).clone()
-    atom_mask = torch.from_numpy(protein.atom_mask).clone()
+    atom_positions = torch.from_numpy(protein.atom_positions).clone().to(device=device)
+    sequence = torch.from_numpy(protein.aatype).clone().to(device=device)
+    atom_mask = torch.from_numpy(protein.atom_mask).clone().to(device=device)
 
     # Get Van der waals pair table and mask
     vdw_table, vdw_mask, hbond_mask = compute_pairwise_vdw_table_and_masks(sequence, atom_mask)
@@ -334,7 +335,7 @@ def compute_clashes(
     return clash_info
 
 
-def assess_sidechains(native_pdb_path: str, decoy_pdb_path: str, sc_b_factor_cutoff: float = 1000, clash_tolerances: Sequence[float] = [0.8, 0.9, 1.0], hbond_allowance: float = 0.6, convert_mse: bool = False):
+def assess_sidechains(native_pdb_path: str, decoy_pdb_path: str, sc_b_factor_cutoff: float = 1000, clash_tolerances: Sequence[float] = [0.8, 0.9, 1.0], hbond_allowance: float = 0.6, convert_mse: bool = False, device=torch.device('cpu')):
     # Load native protein
     native_protein = from_pdb_file(native_pdb_path, mse_to_met=convert_mse)
     native_seq = "".join([rc.restypes_with_x[idx] for idx in native_protein.aatype])
@@ -352,26 +353,27 @@ def assess_sidechains(native_pdb_path: str, decoy_pdb_path: str, sc_b_factor_cut
         assert native_seq == decoy_seq
     
     # Determine chi absolute errors
-    chi_error = compute_chi_error(native_protein, decoy_protein, sc_b_factor_cutoff)
+    chi_error = compute_chi_error(native_protein, decoy_protein, sc_b_factor_cutoff, device=device)
     
     # Determine centrality by number of CBs within 10A. If CB doesn't exist, use CA.
-    centrality = compute_centrality(native_protein)
+    centrality = compute_centrality(native_protein, device=device)
 
     # Determine sidechain RMSDs
-    rmsd = compute_sc_rmsd(native_protein, decoy_protein, sc_b_factor_cutoff)
+    rmsd = compute_sc_rmsd(native_protein, decoy_protein, sc_b_factor_cutoff, device=device)
 
     # Determine clashes as different tolerance values
     clash_info = compute_clashes(
         decoy_protein,
         global_tol_frac=clash_tolerances,
-        hbond_allowance=hbond_allowance)
+        hbond_allowance=hbond_allowance, 
+        device=device)
 
     return {
         'chi_error': chi_error,
         'centrality': centrality,
         'rmsd': rmsd,
         'clash_info': clash_info,
-        'seq': torch.from_numpy(native_protein.aatype),
+        'seq': torch.from_numpy(native_protein.aatype).to(device=device),
     }
     
 
@@ -389,8 +391,8 @@ def summarize(stats, per_aatype: bool = False):
              for key in stats[list(stats.keys())[0]]["rmsd"]},
         'clash_info': {
             tol: {
-                'num_clashes': np.mean([stats[target]['clash_info'][tol]['num_clashes'] for target in stats]).item(),
-                'loss_avg': np.mean([stats[target]['clash_info'][tol]['loss_avg'] for target in stats]).item()}
+                'num_clashes': np.mean([stats[target]['clash_info'][tol]['num_clashes'].cpu() for target in stats]).item(),
+                'loss_avg': np.mean([stats[target]['clash_info'][tol]['loss_avg'].cpu() for target in stats]).item()}
             for tol in stats[list(stats.keys())[0]]['clash_info']},
         "seq": torch.cat([stats[target]["seq"] for target in stats], dim=-1)
     }
@@ -436,13 +438,13 @@ def summarize(stats, per_aatype: bool = False):
 
             # Construct centrality dict.
             centrality_dict = {
-                "chi_mae": chi_mae.numpy(),
+                "chi_mae": chi_mae.cpu().numpy(),
                 "mean_rr": mean_rr.item(),
                 "mean_rmsd": mean_rmsd.item(),
                 "num_residues": len(has_rotamer),
                 "num_rotamers": int(torch.sum(has_rotamer)),
                 "num_sc": int(torch.sum(total_stats["rmsd"]["sc_mask"].clone()[centrality_mask]).item()),
-                "num_chi": torch.sum(chi_mask, dim=list(range(chi_mask.dim() - 1))).numpy()
+                "num_chi": torch.sum(chi_mask, dim=list(range(chi_mask.dim() - 1))).cpu().numpy()
             }
             summary_dict[aatype][centrality] = centrality_dict
     
@@ -453,6 +455,8 @@ def summarize(stats, per_aatype: bool = False):
 
 
 def main(native_dir: str, decoy_dir: str, decoy_tag: str = '', out_filename: str = "packing_stats", sc_b_factor_cutoff: float = 1000, clash_tolerances: str = "0.8,0.9,1.0", hbond_allowance: float = 0.6, convert_mse: bool = False, per_aatype: bool = False, truncate: int = -1, verbose: bool = False):
+    # If have gpu, use it
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Get list of pdb targets from the native_dir
     target_list = get_pdb_targets_from_dir(native_dir)
@@ -470,7 +474,7 @@ def main(native_dir: str, decoy_dir: str, decoy_tag: str = '', out_filename: str
         native_pdb = os.path.join(native_dir, target + '.pdb')
         decoy_pdb = os.path.join(decoy_dir, target + decoy_tag + '.pdb')
 
-        target_stats = assess_sidechains(native_pdb, decoy_pdb, sc_b_factor_cutoff, clash_tolerances, hbond_allowance, convert_mse)
+        target_stats = assess_sidechains(native_pdb, decoy_pdb, sc_b_factor_cutoff, clash_tolerances, hbond_allowance, convert_mse, device=device)
         if target_stats is None:
             continue
         
