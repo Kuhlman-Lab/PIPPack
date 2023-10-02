@@ -750,6 +750,7 @@ class PIPPack(nn.Module):
         n_chi_bins: int = 72,
         predict_offset: bool = True,
         position_scale: float = 1.0,
+        recycle_strategy: str = "mode",
         recycle_SC_D_sc: bool = False,
         recycle_SC_D_probs: bool = False,
         loss: Optional[Dict[str, Union[float, bool]]] = {
@@ -766,6 +767,7 @@ class PIPPack(nn.Module):
         self.edge_features = edge_features
         self.hidden_dim = hidden_dim
         self.k_neighbors = k_neighbors
+        self.recycle_strategy = recycle_strategy
         self.recycle_SC_D_sc = recycle_SC_D_sc
         self.recycle_SC_D_probs = recycle_SC_D_probs
         self.loss = loss
@@ -783,6 +785,12 @@ class PIPPack(nn.Module):
         
         # Sequence embedding layer
         self.W_seq = nn.Embedding(21, hidden_dim)
+        
+        # Recycling embedding layers
+        if recycle_SC_D_sc:
+            self.W_recycle_SC_D_sc = nn.Linear(8, hidden_dim)
+        if recycle_SC_D_probs:
+            self.W_recycle_SC_D_probs = nn.Linear(4 * (n_chi_bins + 1), hidden_dim)
             
         # Recycling embedding layers
         if recycle_SC_D_sc:
@@ -826,9 +834,12 @@ class PIPPack(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def _chi_prediction_from_probs(self, chi_probs, chi_bin_offset=None):
+    def _chi_prediction_from_probs(self, chi_probs, chi_bin_offset=None, strategy="mode"):        
         # One-hot encode predicted chi bin
-        chi_bin = torch.argmax(chi_probs, dim=-1)
+        if strategy == "mode":
+            chi_bin = torch.argmax(chi_probs, dim=-1)
+        elif strategy == "sample":
+            chi_bin = torch.multinomial(chi_probs.view(-1, chi_probs.shape[-1]), num_samples=1).squeeze(-1).view(*chi_probs.shape[:-1])
         chi_bin_one_hot = F.one_hot(chi_bin, num_classes=self.n_chi_bins + 1)
 
         # Determine actual chi value from bin
@@ -938,7 +949,7 @@ class PIPPack(nn.Module):
                 
                 # Create coordinates for prediction
                 if self.predict_bin_chi:
-                    chi_pred = self._chi_prediction_from_probs(outputs['chi_log_probs'], outputs.get('chi_bin_offset', None))
+                    chi_pred = self._chi_prediction_from_probs(outputs['chi_probs'], outputs.get('chi_bin_offset', None), strategy=self.recycle_strategy)
                 else:
                     chi_pred = outputs['norm_chi'] 
                     chi_pred = torch.atan2(chi_pred[..., 0], chi_pred[..., 1])
@@ -949,14 +960,14 @@ class PIPPack(nn.Module):
                 # Update previous predictions
                 prevs["pred_X"] = atom14_xyz
                 prevs["pred_SC_D"] = chi_pred
-                prevs["pred_SC_D_probs"] = outputs.get('chi_probs', None)
+                prevs["pred_SC_D_probs"] = outputs.get("chi_probs", None)
                 
         # Final prediction
         outputs = self.single_forward(batch, prevs)
         
         # Create coordinates for prediction
         if self.predict_bin_chi:
-            chi_pred = self._chi_prediction_from_probs(outputs['chi_log_probs'], outputs.get('chi_bin_offset', None))
+            chi_pred = self._chi_prediction_from_probs(outputs['chi_probs'], outputs.get('chi_bin_offset', None))
         else:
             chi_pred = outputs['norm_chi']    
             chi_pred = torch.atan2(chi_pred[..., 0], chi_pred[..., 1])
@@ -983,6 +994,13 @@ class PIPPack(nn.Module):
         V, E, E_idx, X = self.features(X, S, BB_D, mask, residue_index)
         h_V = self.W_v(V)
         h_E = self.W_e(E)
+        
+        # Update with recycled predictions
+        if self.recycle_SC_D_sc:
+            pred_SC_D_sc = torch.stack((torch.sin(prevs['pred_SC_D']), torch.cos(prevs['pred_SC_D'])), dim=-1)
+            h_V = h_V + self.W_recycle_SC_D_sc(pred_SC_D_sc.view(*pred_SC_D_sc.shape[:-2], -1))
+        if self.recycle_SC_D_probs:
+            h_V = h_V + self.W_recycle_SC_D_probs(prevs['pred_SC_D_probs'].view(*prevs['pred_SC_D_probs'].shape[:-2], -1))
 
         # Update with recycled predictions
         if self.recycle_SC_D_sc:
@@ -1049,7 +1067,7 @@ class PIPPack(nn.Module):
                 
                 # Create coordinates for prediction
                 if self.predict_bin_chi:
-                    chi_pred = self._chi_prediction_from_probs(sample_out['chi_probs'], sample_out['chi_bin_offset'])
+                    chi_pred = self._chi_prediction_from_probs(sample_out['chi_probs'], sample_out['chi_bin_offset'], strategy=self.recycle_strategy)
                 else:
                     chi_pred = sample_out['norm_chi']
                     chi_pred = torch.atan2(chi_pred[..., 0], chi_pred[..., 1])
@@ -1060,7 +1078,7 @@ class PIPPack(nn.Module):
                 # Update previous predictions
                 prevs["pred_X"] = atom14_xyz
                 prevs["pred_SC_D"] = chi_pred
-                prevs["pred_SC_D_probs"] = sample_out.get('chi_probs', None)
+                prevs["pred_SC_D_probs"] = sample_out.get("chi_probs", None)
                 
             # Final prediction
             sample_out = self.single_sample(batch, prevs, temperature)
@@ -1094,6 +1112,13 @@ class PIPPack(nn.Module):
         V, E, E_idx, X = self.features(X, S, BB_D, mask, residue_index)
         h_V = self.W_v(V)
         h_E = self.W_e(E)
+        
+        # Update with recycled predictions
+        if self.recycle_SC_D_sc:
+            pred_SC_D_sc = torch.stack((torch.sin(prevs['pred_SC_D']), torch.cos(prevs['pred_SC_D'])), dim=-1)
+            h_V = h_V + self.W_recycle_SC_D_sc(pred_SC_D_sc.view(*pred_SC_D_sc.shape[:-2], -1))
+        if self.recycle_SC_D_probs:
+            h_V = h_V + self.W_recycle_SC_D_probs(prevs['pred_SC_D_probs'].view(*prevs['pred_SC_D_probs'].shape[:-2], -1))
 
         # Update with recycled predictions
         if self.recycle_SC_D_sc:
