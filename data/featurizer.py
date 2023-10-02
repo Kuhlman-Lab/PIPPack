@@ -302,10 +302,10 @@ def calc_sc_dihedrals(atom_positions: torch.Tensor, aatype: torch.Tensor, return
 
 def chi_mask_from_b_factors(aatype: torch.Tensor, b_factors: torch.Tensor, b_factor_cutoff: float = 40) -> torch.Tensor:
     # Load default chi_mask based on sequence alone.
-    chi_mask = torch.tensor(rc.chi_mask_atom14)[aatype] # [..., N, 4]
+    chi_mask = torch.tensor(rc.chi_mask_atom14, device=aatype.device)[aatype] # [..., N, 4]
     
     # Get atom14 indices for chi atoms
-    chi_atom_indices = torch.tensor(rc.chi_atom_indices_atom14)[aatype]
+    chi_atom_indices = torch.tensor(rc.chi_atom_indices_atom14, device=aatype.device)[aatype]
     chi_atom_indices = torch.stack([chi_atom_indices[..., :4], chi_atom_indices[..., 1:5], chi_atom_indices[..., 2:6], chi_atom_indices[..., 3:]], dim=-1)
     
     # Get b_factors at all chi atoms

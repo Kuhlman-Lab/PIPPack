@@ -16,6 +16,7 @@ inference:
   output_dir: pippack_ensemble_output
   n_recycle: 3
   temperature: 0.0
+  replace_seqs: False
   force_cpu: False
   batch_size: 10000
   seed: 42

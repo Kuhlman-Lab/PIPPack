@@ -788,9 +788,9 @@ class PIPPack(nn.Module):
         
         # Recycling embedding layers
         if recycle_SC_D_sc:
-            self.W_recycle_SC_D_sc = nn.Linear(8, hidden_dim, bias=True)
+            self.W_recycle_SC_D_sc = nn.Linear(8, hidden_dim)
         if recycle_SC_D_probs:
-            self.W_recycle_SC_D_probs = nn.Linear(4 * (n_chi_bins + 1), hidden_dim, bias=True)
+            self.W_recycle_SC_D_probs = nn.Linear(4 * (n_chi_bins + 1), hidden_dim)
             
         # MPNN layers
         self.use_ipmp = use_ipmp
@@ -831,10 +831,9 @@ class PIPPack(nn.Module):
         # One-hot encode predicted chi bin
         if strategy == "mode":
             chi_bin = torch.argmax(chi_probs, dim=-1)
-            chi_bin_one_hot = F.one_hot(chi_bin, num_classes=self.n_chi_bins + 1)
         elif strategy == "sample":
             chi_bin = torch.multinomial(chi_probs.view(-1, chi_probs.shape[-1]), num_samples=1).squeeze(-1).view(*chi_probs.shape[:-1])
-            chi_bin_one_hot = F.one_hot(chi_bin, num_classes=self.n_chi_bins + 1)
+        chi_bin_one_hot = F.one_hot(chi_bin, num_classes=self.n_chi_bins + 1)
 
         # Determine actual chi value from bin
         chi_bin_rad = torch.cat((torch.arange(-torch.pi, torch.pi, 2 * torch.pi / self.n_chi_bins, device=chi_bin.device), torch.tensor([0]).to(device=chi_bin.device)))
@@ -1065,7 +1064,7 @@ class PIPPack(nn.Module):
                 # Update previous predictions
                 prevs["pred_X"] = atom14_xyz
                 prevs["pred_SC_D"] = chi_pred
-                prevs["pred_SC_D_probs"] = sample_out["chi_probs"]
+                prevs["pred_SC_D_probs"] = sample_out.get("chi_probs", None)
                 
             # Final prediction
             sample_out = self.single_sample(batch, prevs, temperature)
