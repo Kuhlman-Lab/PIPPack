@@ -485,11 +485,18 @@ def main(native_dir: str, decoy_dir: str, decoy_tag: str = '', out_filename: str
     # Accumulate stats and summarize
     stats_summary = summarize(stats, per_aatype=per_aatype)
     
-    # Save summary stats
+    # Save summary stats to pickle file
     out_filename = out_filename + f"_aatype" if per_aatype else out_filename
     with open(os.path.join(decoy_dir, f'{out_filename}.pkl'), 'wb') as f:
         pickle.dump(stats_summary, f)
     
+    # Write summary stats to text file
+    with open(os.path.join(decoy_dir, f'{out_filename}.txt'), 'w') as f:
+        for k, v in stats_summary.items():
+            f.write(f"{k}\n")
+            for k2, v2 in v.items():
+                f.write(f"\t{k2}: {v2}\n")
+
     return stats_summary
 
 
