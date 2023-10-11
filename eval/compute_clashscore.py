@@ -2,6 +2,7 @@ import argparse
 import os, glob
 from functools import partial
 from multiprocessing import Pool, Manager
+import numpy as np
 
 
 clashscore = "/proj/kuhl_lab/MolProbity/molprobity/cmdline/clashscore"
@@ -36,6 +37,14 @@ def main(args):
     # Clean up
     for f in glob.glob(os.path.join(args.pdb_dir, "tmp_clashscore_*.txt")):
         os.remove(f)
+    
+    # Compute mean and std of clashscores and write to file 
+    with open(os.path.join(args.pdb_dir, "clashscore_scores.txt"), 'r') as f:
+        lines = f.readlines() 
+    scores = [float(line.strip().split(' ')[-1]) for line in lines[1:] if line.strip()]
+    with open(os.path.join(args.pdb_dir, "clashscore_scores.txt"), 'a') as f:
+        f.write(f"\nMean: {np.mean(scores):.5f}")
+        f.write(f"\nStd: {np.std(scores):.5f}")
 
 
 if __name__ == "__main__":
