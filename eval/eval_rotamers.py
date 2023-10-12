@@ -38,6 +38,24 @@ def main(args):
     # Clean up
     for f in glob.glob(os.path.join(args.pdb_dir, "tmp_eval_rotamers_*.txt")):
         os.remove(f)
+        
+    # Compute statistics and write to file.
+    with open(os.path.join(args.pdb_dir, "rotamer_evals.txt"), 'r') as f:
+        lines = f.readlines()
+    eval_lines = [line.strip() for line in lines if '[eval]' in line.strip()]
+    evals = [line.split('=>')[-1].strip() for line in eval_lines]
+    rotamer_evals = {
+        'num_residues': len(evals),
+        'outliers': evals.count('OUTLIER'),
+        'allowed': evals.count('Allowed'),
+        'favored': evals.count('Favored'),
+    }
+    with open(os.path.join(args.pdb_dir, "rotamer_evals.txt"), 'a') as f:
+        f.write(f"\nRotamer Statistics:\n")
+        f.write(f"\tNum Residues: {rotamer_evals['num_residues']}\n")
+        f.write(f"\tOutliers: {rotamer_evals['outliers']} ({100 * rotamer_evals['outliers'] / rotamer_evals['num_residues']:.3f}%)\n")
+        f.write(f"\tAllowed: {rotamer_evals['allowed']} ({100 * rotamer_evals['allowed'] / rotamer_evals['num_residues']:.3f}%)\n")
+        f.write(f"\tFavored: {rotamer_evals['favored']} ({100 * rotamer_evals['favored'] / rotamer_evals['num_residues']:.3f}%)\n")
 
 
 if __name__ == "__main__":
