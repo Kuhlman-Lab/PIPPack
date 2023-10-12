@@ -495,7 +495,12 @@ def main(native_dir: str, decoy_dir: str, decoy_tag: str = '', out_filename: str
         for k, v in stats_summary.items():
             f.write(f"{k}\n")
             for k2, v2 in v.items():
-                f.write(f"\t{k2}: {v2}\n")
+                if isinstance(v2, dict):
+                    f.write(f"\t{k2}:\n")
+                    for k3, v3 in v2.items():
+                        f.write(f"\t\t{k3}: {v3}\n")
+                else:
+                    f.write(f"\t{k2}: {v2}\n")
 
     return stats_summary
 
