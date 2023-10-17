@@ -17,6 +17,7 @@ position_scale: 1.0
 recycle_strategy: mode
 recycle_SC_D_sc: True
 recycle_SC_D_probs: True
+recycle_X: True
 loss:
   chi_nll_loss_weight: 1.0
   chi_mse_loss_weight: 1.0
