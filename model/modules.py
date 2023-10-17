@@ -753,6 +753,7 @@ class PIPPack(nn.Module):
         recycle_strategy: str = "mode",
         recycle_SC_D_sc: bool = False,
         recycle_SC_D_probs: bool = False,
+        recycle_X: bool = True,
         loss: Optional[Dict[str, Union[float, bool]]] = {
             "chi_nll_loss_weight": 1.0,
             "chi_mse_loss_weight": 1.0,
@@ -770,6 +771,7 @@ class PIPPack(nn.Module):
         self.recycle_strategy = recycle_strategy
         self.recycle_SC_D_sc = recycle_SC_D_sc
         self.recycle_SC_D_probs = recycle_SC_D_probs
+        self.recycle_X = recycle_X
         self.loss = loss
         self.log = logging.getLogger("PIPPack")
 
@@ -958,7 +960,8 @@ class PIPPack(nn.Module):
                 atom14_xyz = get_atom14_coords(batch.X, batch.S, batch.BB_D, chi_pred)
                 
                 # Update previous predictions
-                prevs["pred_X"] = atom14_xyz
+                if self.recycle_X:
+                    prevs["pred_X"] = atom14_xyz
                 prevs["pred_SC_D"] = chi_pred
                 prevs["pred_SC_D_probs"] = outputs.get("chi_probs", None)
                 
@@ -1076,7 +1079,8 @@ class PIPPack(nn.Module):
                 atom14_xyz = get_atom14_coords(batch.X, batch.S, batch.BB_D, chi_pred)     
                            
                 # Update previous predictions
-                prevs["pred_X"] = atom14_xyz
+                if self.recycle_X:
+                    prevs["pred_X"] = atom14_xyz
                 prevs["pred_SC_D"] = chi_pred
                 prevs["pred_SC_D_probs"] = sample_out.get("chi_probs", None)
                 
