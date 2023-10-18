@@ -109,6 +109,37 @@ def compute_centrality(protein: Protein, basis_atom: str = "CB", threshold: floa
     
     return centrality
 
+
+def find_unclosed_proline(protein, tolerance_factor=12, device=torch.device('cpu')) -> torch.Tensor:
+    # Mean and standard deviation of the CD-N bond length in proline
+    # (from stereo_chemical_props.txt)
+    pro_CD_N_mean = 1.474
+    pro_CD_N_std = 0.014
+    
+    # Get components
+    protein_X = torch.from_numpy(protein.atom_positions).clone().to(device=device)
+    protein_X = torch.nan_to_num(protein_X, nan=0.0)
+    protein_S = torch.from_numpy(protein.aatype).clone().to(device=device)
+
+    # Find proline residues
+    pro_mask = (protein_S == rc.restype_order['P']).float()
+    
+    # Get the CD-N bond lengths
+    pro_N = pro_mask[..., None] * protein_X[..., rc.restype_name_to_atom14_names["PRO"].index("N"), :]
+    pro_CD = pro_mask[..., None] * protein_X[..., rc.restype_name_to_atom14_names["PRO"].index("CD"), :]
+    pro_CD_N = torch.norm(pro_CD - pro_N, dim=-1) # [..., L]
+    
+    # Find unclosed prolines based on tolerance factor
+    dists = F.relu(pro_CD_N - (pro_CD_N_mean + tolerance_factor * pro_CD_N_std)) # [..., L]
+    unclosed_pro = dists > 0.0 # [..., L]
+
+    # Find unclosed proline percent
+    unclosed_pro_count = torch.sum(unclosed_pro, dim=-1) 
+    pro_count = torch.sum(pro_mask, dim=-1)
+
+    return unclosed_pro_count, pro_count
+
+
 # TODO: ADD ARGUMENT THAT COMPUTES BASED ON B-FACTOR MASK
 # COMPARE ATTNPACKER EXAMPLE TO THIS CODE
 # SHOULD RMSD INCLUDE CB RMSD??
@@ -368,12 +399,17 @@ def assess_sidechains(native_pdb_path: str, decoy_pdb_path: str, sc_b_factor_cut
         hbond_allowance=hbond_allowance, 
         device=device)
 
+    # Determine unclosed proline
+    unclosed_pro_count, pro_count = find_unclosed_proline(decoy_protein, device=device)
+
     return {
         'chi_error': chi_error,
         'centrality': centrality,
         'rmsd': rmsd,
         'clash_info': clash_info,
         'seq': torch.from_numpy(native_protein.aatype).to(device=device),
+        'unclosed_pro': unclosed_pro_count,
+        'pro': pro_count
     }
     
 
@@ -394,7 +430,9 @@ def summarize(stats, per_aatype: bool = False):
                 'num_clashes': np.mean([stats[target]['clash_info'][tol]['num_clashes'].cpu() for target in stats]).item(),
                 'loss_avg': np.mean([stats[target]['clash_info'][tol]['loss_avg'].cpu() for target in stats]).item()}
             for tol in stats[list(stats.keys())[0]]['clash_info']},
-        "seq": torch.cat([stats[target]["seq"] for target in stats], dim=-1)
+        "seq": torch.cat([stats[target]["seq"] for target in stats], dim=-1),
+        "unclosed_pro": np.sum([stats[target]["unclosed_pro"].cpu().item() for target in stats]),
+        "pro": np.sum([stats[target]["pro"].cpu().item() for target in stats]),
     }
     
     aatypes = [res for res in rc.chi_angles_atoms if rc.chi_angles_atoms[res] != []]
@@ -404,6 +442,7 @@ def summarize(stats, per_aatype: bool = False):
     # Initialize summary dictionary.
     summary_dict = {res: {} for res in aatypes}
     summary_dict["clash_info"] = total_stats["clash_info"]
+    summary_dict["unclosed_pro_pct"] = (total_stats["unclosed_pro"] / total_stats["pro"])
     
     # Loop over all aatypes and centrality levels and compute stats.
     for aatype in aatypes:
@@ -493,14 +532,17 @@ def main(native_dir: str, decoy_dir: str, decoy_tag: str = '', out_filename: str
     # Write summary stats to text file
     with open(os.path.join(decoy_dir, f'{out_filename}.txt'), 'w') as f:
         for k, v in stats_summary.items():
-            f.write(f"{k}\n")
-            for k2, v2 in v.items():
-                if isinstance(v2, dict):
-                    f.write(f"\t{k2}:\n")
-                    for k3, v3 in v2.items():
-                        f.write(f"\t\t{k3}: {v3}\n")
-                else:
-                    f.write(f"\t{k2}: {v2}\n")
+            if isinstance(v, dict):
+                f.write(f"{k}\n")
+                for k2, v2 in v.items():
+                    if isinstance(v2, dict):
+                        f.write(f"\t{k2}:\n")
+                        for k3, v3 in v2.items():
+                            f.write(f"\t\t{k3}: {v3}\n")
+                    else:
+                        f.write(f"\t{k2}: {v2}\n")
+            else:
+                f.write(f"{k}: {v}\n")
 
     return stats_summary
 
