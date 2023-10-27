@@ -8,7 +8,7 @@ import lightning
 
 # Library code
 from utils.utils import count_parameters, create_subdirs
-from utils.train_utils import determine_best_epoch_from_log
+from utils.train_utils import determine_best_epoch_from_log, load_checkpoint
 from model.optim import get_std_opt
 from model.loss import MetricLogger
 
@@ -17,6 +17,26 @@ logger = logging.getLogger(__name__)
 
 
 def train_loop(exp_cfg, model, optimizer, train_dataloader, valid_dataloader, metric_logger, device) -> None:
+    # Sanity validation run
+    model.eval()
+    with torch.no_grad():
+        for batch in valid_dataloader:
+            # Determine how many recycles to do.
+            if exp_cfg.n_recycle > 0:
+                n_cyc = exp_cfg.n_recycle
+            else:
+                n_cyc = 0
+            
+            # Move batch to device.
+            batch = batch.to(device)
+            
+            # Run through model and compute loss.
+            output = model(batch, n_recycle=n_cyc)
+            _ = model.compute_loss(output, batch, _logger=metric_logger, _log_prefix="val")
+        
+    # Perform logging.
+    metric_logger.log(epoch=0, precision=exp_cfg.logging_precision)
+    
     for e in range(1, exp_cfg.epochs + 1):
         # Training epoch
         model.train()
@@ -87,9 +107,15 @@ def main(cfg: DictConfig) -> None:
     # Instantiate the model from config.
     model: torch.nn.Module = hydra.utils.instantiate(cfg.model).to(device)
     logger.info(f'Number of parameters: {count_parameters(model):,}')
+    if "weights_path" in cfg.experiment:
+        logger.info(f"Loading weights from {cfg.experiment.weights_path}")
+        # Find the checkpoint to load into model
+        checkpoint = os.path.join(cfg.experiment.weights_path, f'{cfg.experiment.model_name}_ckpt.pt')
+        load_checkpoint(checkpoint, model)
 
     # Build optimizer
-    optimizer = get_std_opt(model.parameters(), cfg.model.hidden_dim)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-6)
+    #optimizer = get_std_opt(model.parameters(), cfg.model.hidden_dim)
 
     # Build directories for experiment
     create_subdirs(os.getcwd(), ['checkpoints', 'results'])
