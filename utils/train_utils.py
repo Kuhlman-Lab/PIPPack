@@ -60,6 +60,8 @@ def determine_best_epoch_from_log(
         if epoch_line:
             cols = epoch_line.strip().split(delimiter)
             epoch = int(cols[epoch_col])
+            if epoch == 0:
+                continue
             metric_vals = [float(cols[metric_col]) for metric_col in metric_cols]
             epoch_score = sum([weight * val for val, weight in zip(metric_vals, metric_weights)])
             epoch_scores.append( (epoch, epoch_score) )

@@ -247,7 +247,7 @@ def get_renamed_coords(X: torch.Tensor, S: torch.Tensor, pseudo_renaming: bool =
         for atom_pair in atom_renaming_swaps[restype]:
             atom1, atom2 = atom_pair
             atom1_idx, atom2_idx = rc.restype_name_to_atom14_names[restype].index(atom1), rc.restype_name_to_atom14_names[restype].index(atom2)
-            
+
             restype_X[..., atom1_idx, :] = X[..., atom2_idx, :]
             restype_X[..., atom2_idx, :] = X[..., atom1_idx, :]
         
@@ -258,24 +258,34 @@ def get_renamed_coords(X: torch.Tensor, S: torch.Tensor, pseudo_renaming: bool =
     return renamed_X
 
 
-def rmsd_loss(true_X, pred_X, X_mask, residue_mask, eps=1e-8, _return_frac=False, _metric=None):
+def sc_rmsd(decoy_X, true_X, S, X_mask, residue_mask, _metric=None, use_sqrt=False):
+    # Compute atom deviation based on original coordinates
+    atom_deviation = torch.sum(torch.square(decoy_X - true_X), dim=-1)
 
-    per_atom_sq_err = torch.sum((true_X - pred_X) ** 2, dim=-1) * X_mask * residue_mask[..., None]
-    per_res_sq_err = torch.sum(per_atom_sq_err, dim=-1)
-    per_res_atom_count = torch.sum(X_mask * residue_mask[..., None] + eps, dim=-1)
+    # Compute atom deviation based on alternative coordinates
+    true_renamed_X = get_renamed_coords(true_X, S)
+    renamed_atom_deviation = torch.sum(torch.square(decoy_X - true_renamed_X), dim=-1)
     
-    total_sq_err = torch.sum(per_res_sq_err)
-    total_atom_count = torch.sum(per_res_atom_count)
-    rmsd = total_sq_err / total_atom_count
-    #rmsd = torch.sqrt(total_sq_err / total_atom_count)
-    
+    # Get atom mask including backbone atoms
+    atom_mask = X_mask * residue_mask[..., None]
+    atom_mask[..., :4] = 0.0
+
+    # Compute RMSD based on original and alternative coordinates
+    rmsd_og = masked_mean(atom_mask, atom_deviation, -1)
+    rmsd_renamed = masked_mean(atom_mask, renamed_atom_deviation, -1)
+    if use_sqrt:
+        rmsd_og = torch.sqrt(rmsd_og)
+        rmsd_renamed = torch.sqrt(rmsd_renamed)
+    rmsd = torch.minimum(
+        rmsd_og,
+        rmsd_renamed
+    )
+
     if _metric is not None and not isinstance(_metric, BlackHole):
-        rmsd = _metric(per_res_sq_err / per_res_atom_count, residue_mask)
+        mse = _metric(rmsd)
     
-    if _return_frac:
-        return rmsd, (total_sq_err, total_atom_count)
-    
-    return rmsd
+    return mse
+
 
 # TODO: Figure out if any changes are necessary for max and min metrics. I don't think that
 # the logging functionality will be correct for these.
@@ -374,3 +384,294 @@ class MetricLogger:
             return self.min_metrics[key]
         else:
             raise ValueError(f"Unrecognized type {type}. Use 'mean', 'max', or 'min'.")
+
+
+# Following functions are modified from OpenFold
+def interresidue_sc_clash_loss(
+    batch: Dict[str, torch.Tensor],
+    atom14_pred_positions: torch.Tensor,
+    clash_overlap_tolerance: float, # OpenFold value is 1.5
+    eps: float = 1e-10,
+    _metric = None,
+    return_clashing_pairs: bool = False,
+) -> Dict[str, torch.Tensor]:
+    """Computes several checks for structural violations resulting from sidechains.
+    
+    Note: This ignores intra-residue clashes and backbone-backbone clashes.
+    """
+    
+    # Get needed components from batch.
+    aatype = batch["S"].clone()
+    restype_atom14_to_atom37 = []
+    for rt in rc.restypes:
+        atom_names = rc.restype_name_to_atom14_names[rc.restype_1to3[rt]]
+        restype_atom14_to_atom37.append(
+            [(rc.atom_order[name] if name else 0) for name in atom_names]
+        )
+    restype_atom14_to_atom37.append([0] * 14)
+    restype_atom14_to_atom37 = torch.tensor(
+        restype_atom14_to_atom37, 
+        dtype=torch.long, 
+        device=aatype.device
+    )
+    residx_atom14_to_atom37 = restype_atom14_to_atom37[aatype]
+    atom14_atom_exists = batch["X_mask"].clone()
+    residue_index = batch["residue_index"].clone().long()
+    
+    # Compute the Van der Waals radius for every atom
+    # (the first letter of the atom name is the element type).
+    # Shape: (N, 14).
+    atomtype_radius = [
+        rc.van_der_waals_radius[name[0]]
+        for name in rc.atom_types
+    ]
+    atomtype_radius = atom14_pred_positions.new_tensor(atomtype_radius)
+    atom14_atom_radius = (
+        atom14_atom_exists
+        * atomtype_radius[residx_atom14_to_atom37]
+    )
+    
+    # Create the distance matrix.
+    # (N, N, 14, 14)
+    dists = torch.sqrt(
+        eps
+        + torch.sum(
+            (
+                atom14_pred_positions[..., :, None, :, None, :]
+                - atom14_pred_positions[..., None, :, None, :, :]
+            )
+            ** 2,
+            dim=-1,
+        )
+    )
+
+    # Create the mask for valid distances.
+    # shape (N, N, 14, 14)
+    fp_type = atom14_pred_positions.dtype
+    dists_mask = (
+        atom14_atom_exists[..., :, None, :, None]
+        * atom14_atom_exists[..., None, :, None, :]
+    ).type(fp_type)
+
+    # Mask out all the duplicate entries in the lower triangular matrix.
+    # Also mask out the diagonal (atom-pairs from the same residue) -- these atoms
+    # are handled separately.
+    dists_mask = dists_mask * (
+        residue_index[..., :, None, None, None]
+        < residue_index[..., None, :, None, None]
+    )
+
+    # Backbone-backbone clashes are ignored. CB is included in the backbone.
+    bb_bb_mask = torch.zeros_like(dists_mask)
+    bb_bb_mask[..., :5, :5] = 1.0
+    dists_mask = dists_mask * (1.0 - bb_bb_mask)
+
+    # Disulfide bridge between two cysteines is no clash.
+    cys = rc.restype_name_to_atom14_names["CYS"]
+    cys_sg_idx = cys.index("SG")
+    cys_sg_idx = residue_index.new_tensor(cys_sg_idx)
+    cys_sg_idx = cys_sg_idx.reshape(
+        *((1,) * len(residue_index.shape[:-1])), 1
+    ).squeeze(-1)
+    cys_sg_one_hot = F.one_hot(cys_sg_idx, num_classes=14)
+    disulfide_bonds = (
+        cys_sg_one_hot[..., None, None, :, None]
+        * cys_sg_one_hot[..., None, None, None, :]
+    )
+    dists_mask = dists_mask * (1.0 - disulfide_bonds)
+    
+    # Mask interactions between side chain and backbone when atoms are separated by less than 4 bonds.
+    # For all residues, ignore Cb_i - N_i+1 and C_i - Cb_i+1.
+    n_one_hot = F.one_hot(residue_index.new_tensor(0), num_classes=14)
+    n_one_hot = n_one_hot.reshape(
+        *((1,) * len(residue_index.shape[:-1])), *n_one_hot.shape
+    )
+    n_one_hot = n_one_hot.type(fp_type)
+    c_one_hot = F.one_hot(residue_index.new_tensor(2), num_classes=14)
+    c_one_hot = c_one_hot.reshape(
+        *((1,) * len(residue_index.shape[:-1])), *c_one_hot.shape
+    )
+    c_one_hot = c_one_hot.type(fp_type)
+    cb_one_hot = F.one_hot(residue_index.new_tensor(4), num_classes=14)
+    cb_one_hot = cb_one_hot.reshape(
+        *((1,) * len(residue_index.shape[:-1])), *cb_one_hot.shape
+    )
+    cb_one_hot = cb_one_hot.type(fp_type)
+    neighbor_mask = (
+        residue_index[..., :, None, None, None] + 1
+    ) == residue_index[..., None, :, None, None]
+    cb_n_dists = (
+        neighbor_mask
+        * cb_one_hot[..., None, None, :, None]
+        * n_one_hot[..., None, None, None, :]
+    )
+    c_cb_dists = (
+        neighbor_mask
+        * c_one_hot[..., None, None, :, None]
+        * cb_one_hot[..., None, None, None, :]
+    )
+    dists_mask = dists_mask * (1.0 - cb_n_dists) * (1.0 - c_cb_dists)
+    
+    # For PRO at i+1, also ignore 
+    # C_i - Cg_i+1, C_i - Cd_i+1, O_i - Cd_i+1, and Ca_i - Cd_i+1.
+    ca_one_hot = F.one_hot(residue_index.new_tensor(1), num_classes=14)
+    ca_one_hot = ca_one_hot.reshape(
+        *((1,) * len(residue_index.shape[:-1])), *ca_one_hot.shape
+    )
+    ca_one_hot = ca_one_hot.type(fp_type)
+    o_one_hot = F.one_hot(residue_index.new_tensor(3), num_classes=14)
+    o_one_hot = o_one_hot.reshape(
+        *((1,) * len(residue_index.shape[:-1])), *o_one_hot.shape
+    )
+    o_one_hot = o_one_hot.type(fp_type)
+    pro = rc.restype_name_to_atom14_names["PRO"]
+    pro_cg_idx = pro.index("CG")
+    pro_cg_idx = residue_index.new_tensor(pro_cg_idx)
+    pro_cg_idx = pro_cg_idx.reshape(
+        *((1,) * len(residue_index.shape[:-1])), 1
+    ).squeeze(-1)
+    pro_cg_one_hot = F.one_hot(pro_cg_idx, num_classes=14).type(fp_type)
+    pro_cd_idx = pro.index("CD")
+    pro_cd_idx = residue_index.new_tensor(pro_cd_idx)
+    pro_cd_idx = pro_cd_idx.reshape(
+        *((1,) * len(residue_index.shape[:-1])), 1
+    ).squeeze(-1)
+    pro_cd_one_hot = F.one_hot(pro_cd_idx, num_classes=14).type(fp_type)
+    res_ip1_pro = aatype[..., 1:] == rc.restype_order["P"]
+    res_ip1_pro = torch.cat(
+        (
+            res_ip1_pro,
+            torch.zeros_like(res_ip1_pro[..., :1]),
+        ),
+        dim=-1,
+    )
+    pro_neighbor_mask = res_ip1_pro[..., None, None, None] * neighbor_mask
+    c_pro_cg_dists = (
+        pro_neighbor_mask
+        * c_one_hot[..., None, None, :, None]
+        * pro_cg_one_hot[..., None, None, None, :]
+    )
+    c_pro_cd_dists = (
+        pro_neighbor_mask
+        * c_one_hot[..., None, None, :, None]
+        * pro_cd_one_hot[..., None, None, None, :]
+    )
+    o_pro_cd_dists = (
+        pro_neighbor_mask
+        * o_one_hot[..., None, None, :, None]
+        * pro_cd_one_hot[..., None, None, None, :]
+    )
+    ca_pro_cd_dists = (
+        pro_neighbor_mask
+        * ca_one_hot[..., None, None, :, None]
+        * pro_cd_one_hot[..., None, None, None, :]
+    )
+    dists_mask = dists_mask * (1.0 - c_pro_cg_dists) * (1.0 - c_pro_cd_dists) * (1.0 - o_pro_cd_dists) * (1.0 - ca_pro_cd_dists)
+    
+    # Compute the lower bound for the allowed distances.
+    # shape (N, N, 14, 14)
+    dists_lower_bound = dists_mask * (
+        atom14_atom_radius[..., :, None, :, None]
+        + atom14_atom_radius[..., None, :, None, :]
+    )
+
+    # Compute the error.
+    # shape (N, N, 14, 14)
+    dists_to_low_error = dists_mask * torch.nn.functional.relu(
+        dists_lower_bound - clash_overlap_tolerance - dists
+    )
+
+    # Compute the mean loss.
+    # shape ()
+    mean_loss = torch.sum(dists_to_low_error) / (eps + torch.sum(dists_mask))
+
+    if _metric is not None and not isinstance(_metric, BlackHole):
+        mean_loss = _metric(dists_to_low_error, dists_mask)
+
+    # Compute the per atom loss sum.
+    # shape (N, 14)
+    per_atom_loss_sum = torch.sum(dists_to_low_error, dim=(-4, -2)) + torch.sum(
+        dists_to_low_error, axis=(-3, -1)
+    )
+
+    # Compute the hard clash mask.
+    # shape (N, N, 14, 14)
+    clash_mask = dists_mask * (
+        dists < (dists_lower_bound - clash_overlap_tolerance)
+    )
+
+    # Compute the per atom clash.
+    # shape (N, 14)
+    per_atom_clash_mask = torch.maximum(
+        torch.amax(clash_mask, axis=(-4, -2)),
+        torch.amax(clash_mask, axis=(-3, -1)),
+    )
+
+    clash_info = {
+            "mean_loss": mean_loss,  # shape ()
+            "per_atom_loss_sum": per_atom_loss_sum,  # shape (N, 14)
+            "per_atom_clash_mask": per_atom_clash_mask,  # shape (N, 14)
+    }
+
+    if return_clashing_pairs:
+        if len(batch["S"].shape) == 1:
+            aatype = aatype.unsqueeze(0)
+            clash_mask = clash_mask.unsqueeze(0)
+            residue_index = residue_index.unsqueeze(0)
+        
+        clashing_pairs = []
+        for b_idx in range(aatype.shape[0]):
+            res1, res2, atom1, atom2 = map(list, torch.where(clash_mask[b_idx]))
+            pairs = []
+            for r1, r2, a1, a2 in zip(res1, res2, atom1, atom2):
+                c1 = (
+                    rc.restypes[aatype[b_idx][r1]]
+                    + str(residue_index[b_idx][r1].item()) 
+                    + ' ' 
+                    + rc.restype_name_to_atom14_names[rc.restype_1to3[rc.restypes[aatype[b_idx][r1]]]][a1]
+                )
+                c2 = (
+                    rc.restypes[aatype[b_idx][r2]]
+                    + str(residue_index[b_idx][r2].item())
+                    + ' '
+                    + rc.restype_name_to_atom14_names[rc.restype_1to3[rc.restypes[aatype[b_idx][r2]]]][a2]
+                )
+                pairs.append((c1, c2))
+            clashing_pairs.append(pairs)
+        
+        if len(batch["S"].shape) == 1:
+            clashing_pairs = clashing_pairs[0]
+            
+        return clash_info, clashing_pairs
+    else:
+        return clash_info
+
+
+def unclosed_proline_loss(batch, atom14_pred_positions, tolerance_factor=12, _metric=None, eps=1e-10) -> torch.Tensor:
+    # Mean and standard deviation of the CD-N bond length in proline
+    # (from stereo_chemical_props.txt)
+    pro_CD_N_mean = 1.474
+    pro_CD_N_std = 0.014
+    
+    # Find proline residues
+    pro_mask = (batch["S"] == rc.restype_order['P']).float()
+    pro_mask = pro_mask * batch.residue_mask
+    
+    # Get the CD-N bond lengths
+    # (distances are summed rather than squared to avoid taking the square root)
+    pro_N = pro_mask[..., None] * atom14_pred_positions[..., rc.restype_name_to_atom14_names["PRO"].index("N"), :]
+    pro_CD = pro_mask[..., None] * atom14_pred_positions[..., rc.restype_name_to_atom14_names["PRO"].index("CD"), :]
+    pro_CD_N = torch.sum((pro_CD - pro_N) ** 2, dim=-1)
+    
+    # Find unclosed prolines based on tolerance factor
+    # (square the tolerance factor to avoid taking the square root)
+    dists = F.relu(pro_CD_N - (pro_CD_N_mean + tolerance_factor * pro_CD_N_std) ** 2)
+
+    # Compute the mean loss.
+    # shape ()
+    mean_loss = torch.sum(dists) / (eps + torch.sum(pro_mask))
+    
+    if _metric is not None and not isinstance(_metric, BlackHole):
+        mean_loss = _metric(dists, pro_mask)
+    
+    return mean_loss

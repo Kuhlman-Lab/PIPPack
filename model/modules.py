@@ -9,7 +9,7 @@ from torch.utils.checkpoint import checkpoint
 
 import data.residue_constants as rc
 from data.features import get_bb_frames, torsion_angles_to_frames, frames_and_literature_positions_to_atom14_pos
-from model.loss import rotamer_recovery_from_coords, nll_chi_loss, offset_mse, supervised_chi_loss, rmsd_loss, BlackHole
+from model.loss import rotamer_recovery_from_coords, nll_chi_loss, offset_mse, supervised_chi_loss, BlackHole, sc_rmsd, interresidue_sc_clash_loss, unclosed_proline_loss
 
 # The following gather functions
 def gather_edges(edges, neighbor_idx):
@@ -892,10 +892,11 @@ class PIPPack(nn.Module):
                 batch.S, batch.SC_D, output['final_X'], 
                 batch.residue_mask, batch.SC_D_mask,
                 _metric=_logger.get_metric(_log_prefix + " rotamer recovery")),
-            "rmsd_loss": lambda: rmsd_loss(
-                batch.X[..., 5:, :], output['final_X'][..., 5:, :], 
-                batch.X_mask[..., 5:], batch.residue_mask,
-                _metric=_logger.get_metric(_log_prefix + " rmsd"))} # Exclude BB residues
+            "rmsd_loss": lambda: sc_rmsd(
+                output['final_X'], batch.X, batch.S, 
+                batch.X_mask, batch.residue_mask,
+                _metric=_logger.get_metric(_log_prefix + " rmsd"))
+        }
         
         if self.predict_bin_chi:
             loss_fns.update({
@@ -1180,3 +1181,119 @@ class PIPPack(nn.Module):
         }
 
         return output
+
+
+class PIPPackFineTune(PIPPack):
+    def __init__(self, gumbel_temp=1.0, **kwargs):
+        self.gumbel_temp = gumbel_temp
+        super().__init__(**kwargs)
+        
+    @property
+    def metric_names(self) -> Sequence[str]:
+        metrics = [
+            'rotamer recovery',
+            'rmsd',
+            'clash loss',
+            'proline loss'
+        ]
+        
+        if self.predict_bin_chi:
+            metrics.append(
+                'chi nll loss'
+            )
+            if self.predict_offset:
+                metrics.append(
+                    'offset mse loss'
+                )
+        else:
+            metrics.append(
+                'chi mse loss'
+            )
+            
+        return metrics
+    
+    def _gumbel_sample_from_logits(self, chi_logits, chi_bin_offset=None):
+        # Sample from Gumbel-Softmax distribution
+        gumbel_chi_bin = F.gumbel_softmax(chi_logits, self.gumbel_temp, hard=True)
+        
+        # Determine actual chi value from bin
+        chi_bin_rad = torch.cat((torch.arange(-torch.pi, torch.pi, 2 * torch.pi / self.n_chi_bins, device=chi_logits.device), torch.tensor([0]).to(device=chi_logits.device)))
+        pred_chi_bin = torch.sum(chi_bin_rad.view(*([1] * len(chi_logits.shape)), -1) * gumbel_chi_bin, dim=-1)
+        
+        # Add bin offset
+        if self.predict_offset and chi_bin_offset is not None:
+            bin_sample_update = chi_bin_offset
+        else:
+            bin_sample_update = (2 * torch.pi / self.n_chi_bins) * torch.rand(chi_logits.shape, device=chi_logits.device)
+        sampled_chi = pred_chi_bin + bin_sample_update
+        
+        return sampled_chi
+    
+    def forward(self, batch, n_recycle=0):
+        outputs = super().forward(batch, n_recycle)
+        
+        # Add a gumbel sample to outputs
+        gumbel_sample = self._gumbel_sample_from_logits(outputs['chi_logits'], outputs.get('chi_bin_offset', None))
+        aatype_chi_mask = torch.tensor(rc.chi_mask_atom14, dtype=torch.float32, device=gumbel_sample.device)[batch.S]
+        chi_pred = aatype_chi_mask * gumbel_sample
+        atom14_xyz = get_atom14_coords(batch.X, batch.S, batch.BB_D, chi_pred)
+        outputs['gumbel_SC_D'] = chi_pred
+        outputs['gumbel_X'] = atom14_xyz
+        
+        return outputs
+    
+    def compute_loss(self, output, batch, _return_breakdown=False, _logger=BlackHole(), _log_prefix="train"):
+        loss_fns = {
+            "rotamer_recovery": lambda: rotamer_recovery_from_coords(
+                batch.S, batch.SC_D, output['final_X'], 
+                batch.residue_mask, batch.SC_D_mask,
+                _metric=_logger.get_metric(_log_prefix + " rotamer recovery")),
+            "rmsd_loss": lambda: sc_rmsd(
+                output['final_X'], batch.X, batch.S,
+                batch.X_mask, batch.residue_mask,
+                _metric=_logger.get_metric(_log_prefix + " rmsd")),
+            # Fine-tuning losses on Gumbel sample
+            "clash_loss": lambda: interresidue_sc_clash_loss(
+                batch, output['gumbel_X'], 0.6,
+                _metric=_logger.get_metric(_log_prefix + " clash loss"))["mean_loss"],
+            "proline_loss": lambda: unclosed_proline_loss(
+                batch, output['gumbel_X'],
+                _metric=_logger.get_metric(_log_prefix + " proline loss"))
+        }
+        
+        if self.predict_bin_chi:
+            loss_fns.update({
+                "chi_nll_loss": lambda: nll_chi_loss(
+                    output["chi_log_probs"], batch.SC_D_bin,
+                    batch.S, batch.SC_D_mask,
+                    _metric=_logger.get_metric(_log_prefix + " chi nll loss"))})
+            if self.predict_offset:
+                loss_fns.update({
+                    "offset_mse_loss": lambda: offset_mse(
+                        output["chi_bin_offset"], batch.SC_D_bin_offset,
+                        batch.SC_D_mask, self.n_chi_bins, False,
+                        _metric=_logger.get_metric(_log_prefix + " offset mse loss"))})
+        else:
+            loss_fns.update({
+                "chi_mse_loss": lambda: supervised_chi_loss(
+                    output["norm_chi"], output["unnorm_chi"],
+                    batch.S, batch.residue_index,
+                    batch.SC_D_mask, batch.SC_D_sincos,
+                    1.0, 0.1,
+                    _metric=_logger.get_metric(_log_prefix + " chi mse loss"))})
+            
+        total_loss = 0.
+        losses = {}
+        for loss_name, loss_fn in loss_fns.items():
+            weight = self.loss.get(loss_name + "_weight", 0.0)
+            loss = loss_fn()
+            if (torch.isnan(loss) or torch.isinf(loss)):
+                self.log.warning(f"{loss_name} loss is NaN. Skipping...")
+                loss = loss.new_tensor(0., requires_grad=True)
+            total_loss = total_loss + weight * loss
+            losses[loss_name] = loss.detach().cpu().clone()
+            
+        if not _return_breakdown:
+            return total_loss
+        
+        return total_loss, losses
