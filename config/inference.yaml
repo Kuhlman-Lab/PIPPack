@@ -14,12 +14,20 @@ inference:
   n_recycle: 3
   temperature: 0.0
   replace_seqs: False
+  use_resample: False
   force_cpu: False
   batch_size: 10000
   seed: 42
 
   # Debugging
   debug: False
+
+  resample_args:
+    sample_temp: 0.5
+    clash_overlap_tolerance: 0.6
+    pro_tolerance_factor: 12
+    max_iters: 10
+    metropolis_temp: 0.000005
 
 hydra:
   run:
