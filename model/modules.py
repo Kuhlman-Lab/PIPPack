@@ -728,6 +728,9 @@ def get_atom14_coords(X, S, BB_D, SC_D):
     # Predict coordinates
     pred_xyz = frames_and_literature_positions_to_atom14_pos(all_frames_to_global, S, default_frames, group_idx, 
                                                              atom_mask, lit_positions)
+    
+    # Replace backbone atoms with input coordinates
+    pred_xyz[..., :4, :] = X[..., :4, :]
 
     return pred_xyz
 

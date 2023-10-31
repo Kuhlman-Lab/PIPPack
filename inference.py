@@ -16,6 +16,7 @@ from data.protein import to_pdb, Protein, from_pdb_file
 from data.features import make_atom14_masks, atom14_to_atom37
 from data.top2018_dataset import transform_structure, collate_fn
 import data.residue_constants as rc
+from model.resampling import resample_loop
 
 
 logger = logging.getLogger(__name__)
@@ -51,19 +52,40 @@ def replace_protein_sequence(protein, protein_name, new_seqs):
         
     return proteins
 
-
-def sample_epoch(model, batch, temperature, device, n_recycle=0):    
+@torch.no_grad()
+def sample_epoch(model, batch, temperature, device, n_recycle=0, resample=False, resample_args={}):    
     # Sampling epoch
     model.eval()
-    with torch.no_grad():
-        # Move to device
-        batch = batch.to(device)
-        
-        # Sample the model
-        results = model.sample(batch, temperature=temperature, n_recycle=n_recycle)
+    
+    # Move to device
+    batch = batch.to(device)
+    
+    # Sample the model
+    results = model.sample(batch, temperature=temperature, n_recycle=n_recycle)
 
-        # Add batch information
-        results.update(batch.to_dict())
+    # Add batch information
+    results.update(batch.to_dict())
+    
+    if resample:
+        for i in range(batch.S.shape[0]):
+            # Get the protein components.
+            protein = {
+                "S": results["S"][i],
+                "X": results["X"][i],
+                "X_mask": results["X_mask"][i],
+                "BB_D": results["BB_D"][i],
+                "residue_index": results["residue_index"][i],
+                "residue_mask": results["residue_mask"][i],
+                "chi_logits": results["chi_logits"][i],
+                "chi_bin_offset": results["chi_bin_offset"][i] if "chi_bin_offset" in results else None,
+            }
+            pred_xyz = results["final_X"][i]
+            
+            # Perform resampling
+            resample_xyz, _ = resample_loop(protein, pred_xyz, **resample_args)
+            
+            # Update the coordinates
+            results["final_X"][i] = resample_xyz
         
     return results
 
@@ -166,7 +188,7 @@ def main(cfg: DictConfig) -> None:
         batch = collate_fn(proteins)
         
         # Run sample
-        sample_results = sample_epoch(model, batch, cfg.inference.temperature, device, n_recycle=cfg.inference.n_recycle)
+        sample_results = sample_epoch(model, batch, cfg.inference.temperature, device, n_recycle=cfg.inference.n_recycle, resample=cfg.inference.use_resample, resample_args=cfg.inference.resample_args)
 
         # Get full atom proteins
         protein_strings = pdbs_from_prediction(sample_results)
