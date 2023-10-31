@@ -1218,8 +1218,8 @@ class PIPPackFineTune(PIPPack):
         
         # Determine actual chi value from bin
         chi_bin_rad = torch.cat((torch.arange(-torch.pi, torch.pi, 2 * torch.pi / self.n_chi_bins, device=chi_logits.device), torch.tensor([0]).to(device=chi_logits.device)))
-        pred_chi_bin = torch.sum(chi_bin_rad.view(*([1] * len(chi_logits.shape)), -1) * gumbel_chi_bin, dim=-1)
-        
+        pred_chi_bin = torch.sum(chi_bin_rad.view(*([1] * (len(chi_logits.shape) - 1)), -1) * gumbel_chi_bin, dim=-1)
+
         # Add bin offset
         if self.predict_offset and chi_bin_offset is not None:
             bin_sample_update = chi_bin_offset
@@ -1236,6 +1236,7 @@ class PIPPackFineTune(PIPPack):
         gumbel_sample = self._gumbel_sample_from_logits(outputs['chi_logits'], outputs.get('chi_bin_offset', None))
         aatype_chi_mask = torch.tensor(rc.chi_mask_atom14, dtype=torch.float32, device=gumbel_sample.device)[batch.S]
         chi_pred = aatype_chi_mask * gumbel_sample
+        
         atom14_xyz = get_atom14_coords(batch.X, batch.S, batch.BB_D, chi_pred)
         outputs['gumbel_SC_D'] = chi_pred
         outputs['gumbel_X'] = atom14_xyz
