@@ -9,7 +9,7 @@ from torch.utils.checkpoint import checkpoint
 
 import data.residue_constants as rc
 from data.features import get_bb_frames, torsion_angles_to_frames, frames_and_literature_positions_to_atom14_pos
-from model.loss import rotamer_recovery_from_coords, nll_chi_loss, offset_mse, supervised_chi_loss, BlackHole, sc_rmsd, interresidue_sc_clash_loss, unclosed_proline_loss
+from model.loss import rotamer_recovery_from_coords, nll_chi_loss, offset_mse, supervised_chi_loss, BlackHole, sc_rmsd, local_interresidue_sc_clash_loss, unclosed_proline_loss
 
 # The following gather functions
 def gather_edges(edges, neighbor_idx):
@@ -1257,7 +1257,7 @@ class PIPPackFineTune(PIPPack):
                 batch.X_mask, batch.residue_mask,
                 _metric=_logger.get_metric(_log_prefix + " rmsd")),
             # Fine-tuning losses on Gumbel sample
-            "clash_loss": lambda: interresidue_sc_clash_loss(
+            "clash_loss": lambda: local_interresidue_sc_clash_loss(
                 batch, output['gumbel_X'], 0.6,
                 _metric=_logger.get_metric(_log_prefix + " clash loss"))["mean_loss"],
             "proline_loss": lambda: unclosed_proline_loss(

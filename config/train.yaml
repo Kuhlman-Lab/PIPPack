@@ -10,7 +10,7 @@ hydra:
   job:
     chdir: True
   run:
-    dir: exp_logs_v2/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: /work/users/n/z/nzrandol/pippack_exp_logs/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
   callbacks:
     save_job_info:
       _target_: hydra.experimental.callbacks.PickleJobInfoCallback
