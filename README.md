@@ -8,7 +8,7 @@ PIPPack is a graph neural network (GNN) that utilizes geometry-aware invariant p
 To get started right in your browser, click this button to open the PIPPack notebook in Google Colab:
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Kuhlman-Lab/PIPPack/blob/main/notebooks/PIPPack.ipynb)
 
-Note that this notebook is still a WIP, with a number of features still to be implemented.
+Please let us know if you have any issues or suggestions!
 
 ## Getting started
 To build the environment from scratch:
@@ -43,9 +43,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 If you find PIPPack useful in your research or project, please cite our paper:
 ```
 @article{randolph2023pippack,
-  title={Invariant point message passing for protein side chain packing and design},
+  title={Invariant point message passing for protein side chain packing},
   author={Randolph, Nicholas and Kuhlman, Brian},
-  journal={bioRxiv preprint bioRxiv:10.1101/2023.08.03.551328 },
+  journal={bioRxiv preprint bioRxiv:10.1101/2023.08.03.551328},
   year={2023}
 }
 ```
