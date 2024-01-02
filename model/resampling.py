@@ -352,6 +352,77 @@ def resample_prolines(batch, atom14_pred_positions, proline_indices, temperature
     return all_atom
 
 
+def wiggle_prolines(batch, atom14_pred_positions, proline_indices, wiggle_factor=3) -> torch.Tensor:
+    # Get X, S, BB_D, and chi_logits of proline indices
+    resampled_X = batch["X"].squeeze()[proline_indices]
+    resampled_S = batch["S"].squeeze()[proline_indices]
+    resampled_BB_D = batch["BB_D"].squeeze()[proline_indices]
+    resampled_chi_logits = batch["chi_logits"].squeeze()[proline_indices]
+    
+    # Get previous chi bins
+    num_bins = resampled_chi_logits.shape[-1] - 1
+    SC_D_bin = get_proline_chi_bins(batch, atom14_pred_positions, proline_indices).long()
+    
+    # Resample all unclosed prolines
+    new_X = resampled_X.clone()
+    for pro_i in range(len(proline_indices)):
+        curr_chi = SC_D_bin[pro_i][:2].tolist()
+        
+        chis_to_try = []
+        for i in range(0, wiggle_factor + 1):
+            for j in range(0, wiggle_factor + 1):
+                if i == j == 0:
+                    continue
+                chis_to_try.append([curr_chi[0] + i, curr_chi[1] + j])
+                if j != 0:
+                    chis_to_try.append([curr_chi[0] + i, curr_chi[1] - j])
+                    
+            if i != 0:
+                for j in range(0, wiggle_factor + 1):
+                    chis_to_try.append([curr_chi[0] - i, curr_chi[1] + j])
+                    if j != 0:
+                        chis_to_try.append([curr_chi[0] - i, curr_chi[1] - j])
+        
+        # Account for periodicity 
+        for chi in chis_to_try:
+            if chi[0] < 0:
+                chi[0] += num_bins
+            if chi[1] < 0:
+                chi[1] += num_bins
+            if chi[0] >= num_bins:
+                chi[0] -= num_bins
+            if chi[1] >= num_bins:
+                chi[1] -= num_bins
+        
+        for chi in chis_to_try:
+            # Check if proline is closed
+            chi_bin_one_hot = F.one_hot(torch.tensor(chi).to(device=resampled_X.device), num_classes=resampled_chi_logits.shape[-1])
+            chi_bin_rad = torch.cat((torch.arange(-torch.pi, torch.pi, 2 * torch.pi / num_bins, device=chi_bin_one_hot.device), torch.tensor([0]).to(device=chi_bin_one_hot.device)))
+            pred_chi_bin = torch.sum(chi_bin_rad * chi_bin_one_hot, dim=-1)
+            pred_chi_bin = torch.cat((pred_chi_bin, torch.tensor([0, 0]).to(device=chi_bin_one_hot.device)), dim=-1)
+            chi_bin_offset = batch.get('chi_bin_offset', None)
+            if chi_bin_offset is not None:
+                bin_sample_update = chi_bin_offset.squeeze()[proline_indices][pro_i]
+            else:
+                bin_sample_update = (2 * torch.pi / num_bins) * torch.rand(chi_bin_one_hot.shape, device=chi_bin_one_hot.device)
+            chi_pred = pred_chi_bin + bin_sample_update
+            aatype_chi_mask = torch.tensor(rc.chi_mask_atom14, dtype=torch.float32, device=chi_pred.device)[rc.restype_order['P']]
+            chi_pred = aatype_chi_mask * chi_pred
+            resampled_atom14_xyz = get_atom14_coords(resampled_X[pro_i], resampled_S[pro_i], resampled_BB_D[pro_i], chi_pred)
+            
+            closed = len(find_unclosed_prolines({"S": resampled_S[pro_i]}, resampled_atom14_xyz)) == 0
+            
+            if closed:
+                new_X[pro_i] = resampled_atom14_xyz
+                break
+        
+    # Update coordinate tensor
+    all_atom = atom14_pred_positions.clone().squeeze()
+    all_atom[proline_indices] = new_X
+    
+    return all_atom
+    
+
 def resample_loop(batch, atom14_pred_positions, sample_temp=0.5, clash_overlap_tolerance=0.6, pro_tolerance_factor=12, max_iters=10, metropolis_temp=5e-6, verbose=0) -> torch.Tensor:
     # Find clashing residues and energy
     clashing_residues, clash_energy = find_clashing_residues(batch, atom14_pred_positions, clash_overlap_tolerance)
@@ -363,13 +434,16 @@ def resample_loop(batch, atom14_pred_positions, sample_temp=0.5, clash_overlap_t
     resampled_coords = atom14_pred_positions.clone()
     resampled_energy = clash_energy.clone()
     resampled_iter = -1
+    temp = sample_temp
     for i in range(max_iters):
         # If there are no violations, break
         if resampled_energy == 0.0:
             break
         
         # Resample clashes
-        temp_coords = resample_clashes(batch, resampled_coords, clashing_residues, sample_temp)
+        if i % 10 == 0:
+            temp += 0.1
+        temp_coords = resample_clashes(batch, resampled_coords, clashing_residues, temp)
         
         # Find new clashing residues and energy
         clashing_residues, clash_energy = find_clashing_residues(batch, temp_coords, clash_overlap_tolerance)
@@ -400,6 +474,7 @@ def resample_loop(batch, atom14_pred_positions, sample_temp=0.5, clash_overlap_t
         print('Number of unclosed prolines to resample:', len(unclosed_prolines))
         
     # Resample unclosed proline residues
+    #resampled_coords = wiggle_prolines(batch, resampled_coords, unclosed_prolines)
     resampled_coords = resample_prolines(batch, resampled_coords, unclosed_prolines, sample_temp)
     unclosed_prolines = find_unclosed_prolines(batch, resampled_coords, pro_tolerance_factor)
     if verbose:

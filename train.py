@@ -32,7 +32,7 @@ def train_loop(exp_cfg, model, optimizer, train_dataloader, valid_dataloader, me
             
             # Run through model and compute loss.
             output = model(batch, n_recycle=n_cyc)
-            _ = model.compute_loss(output, batch, _logger=metric_logger, _log_prefix="val")
+            _ = model.compute_loss(output, batch, use_sc_bf_mask=True, _logger=metric_logger, _log_prefix="val")
         
     # Perform logging.
     metric_logger.log(epoch=0, precision=exp_cfg.logging_precision)
@@ -52,7 +52,7 @@ def train_loop(exp_cfg, model, optimizer, train_dataloader, valid_dataloader, me
             
             # Run through model and compute loss.
             output = model(batch, n_recycle=n_cyc)
-            loss = model.compute_loss(output, batch, _logger=metric_logger)
+            loss = model.compute_loss(output, batch, use_sc_bf_mask=exp_cfg.use_b_factor_mask, _logger=metric_logger)
             
             # Perform backprop and update.
             loss.backward()
@@ -75,7 +75,7 @@ def train_loop(exp_cfg, model, optimizer, train_dataloader, valid_dataloader, me
                     
                     # Run through model and compute loss.
                     output = model(batch, n_recycle=n_cyc)
-                    _ = model.compute_loss(output, batch, _logger=metric_logger, _log_prefix="val")
+                    _ = model.compute_loss(output, batch, use_sc_bf_mask=True, _logger=metric_logger, _log_prefix="val")
         
         # Perform logging.
         metric_logger.log(epoch=e, precision=exp_cfg.logging_precision)
@@ -114,8 +114,10 @@ def main(cfg: DictConfig) -> None:
         load_checkpoint(checkpoint, model)
 
     # Build optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-6)
-    #optimizer = get_std_opt(model.parameters(), cfg.model.hidden_dim)
+    if "finetune" in cfg.experiment.name:
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-6)
+    else:
+        optimizer = get_std_opt(model.parameters(), cfg.model.hidden_dim)
 
     # Build directories for experiment
     create_subdirs(os.getcwd(), ['checkpoints', 'results'])

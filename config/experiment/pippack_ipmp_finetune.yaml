@@ -6,7 +6,7 @@ defaults:
 
 # Training arguments
 experiment:
-  name: pippack_ipmp
+  name: pippack_ipmp_finetune
   weights_path: /proj/kuhl_lab/users/nzrandol/PIPPack/exp_logs_v2/pippack_ipmp/2023-08-31_08-08-59/results
   model_name: pippack_epoch91
   epochs: 150

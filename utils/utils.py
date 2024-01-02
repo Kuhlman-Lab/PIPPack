@@ -177,7 +177,7 @@ def get_mean_clashscore(dir, clashscore_file="clashscore_scores.txt"):
     with open(os.path.join(dir, clashscore_file), 'r') as f:
         lines = f.readlines()
         
-    scores = [float(line.strip().split(' ')[-1]) for line in lines[1:] if line.strip()]
+    scores = [float(line.strip().split(' ')[-1]) for line in lines[1:] if '=' in line.strip()]
     return np.mean(scores)
 
 
@@ -205,7 +205,7 @@ def get_packing_stats(dir, stats_file="packing_stats.pkl"):
     return stats
 
 
-def get_stats_mean_std(dir, subdirs=[], stats_file="packing_stats.pkl"):
+def get_stats_mean_std(dir, subdirs=[], stats_file="packing_stats.pkl", no_clash=False):
     if subdirs == []:
         subdirs = [f for f in os.listdir(dir) if os.path.isdir(f)]
 
@@ -260,14 +260,17 @@ def get_stats_mean_std(dir, subdirs=[], stats_file="packing_stats.pkl"):
         
         total_stats = recursive_dict_append(stats, total_stats)
         
+    mean_stats = leaf_mean_clone(total_stats)
+    std_stats = leaf_std_clone(total_stats)
+
+    if no_clash:
+        return (mean_stats, std_stats)
+    
     clashscores = []
     for subdir in subdirs:
         clashscores.append(get_mean_clashscore(os.path.join(dir, subdir)))
-        
-    mean_stats = leaf_mean_clone(total_stats)
-    mean_clashscore = np.mean(clashscores)
     
-    std_stats = leaf_std_clone(total_stats)
+    mean_clashscore = np.mean(clashscores)
     std_clashscore = np.std(clashscores)
         
     return (mean_stats, std_stats), (mean_clashscore, std_clashscore)
