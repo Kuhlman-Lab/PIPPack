@@ -1,7 +1,7 @@
 # PIPPack
 Implementation of Protein Invariant Point Packer (PIPPack)
 
-PIPPack is a graph neural network (GNN) that utilizes geometry-aware invariant point message passing (IPMP) updates and recycling to rapidly generate accurate protein side chains. Check out the [preprint](https://www.biorxiv.org/content/10.1101/2023.08.03.551328v1) on bioRxiv!
+PIPPack is a graph neural network (GNN) that utilizes geometry-aware invariant point message passing (IPMP) updates and recycling to rapidly generate accurate protein side chains. Check out the [preprint](https://www.biorxiv.org/content/10.1101/2023.08.03.551328) on bioRxiv!
 ![PIPPack Architecture](./images/pippack_architecture.png)
 
 ## Quickstart
