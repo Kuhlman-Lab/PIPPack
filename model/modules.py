@@ -889,11 +889,17 @@ class PIPPack(nn.Module):
         else:
             return "val chi mse loss mean"
 
-    def compute_loss(self, output, batch, _return_breakdown=False, _logger=BlackHole(), _log_prefix="train"):
+    def compute_loss(self, output, batch, use_sc_bf_mask=False, _return_breakdown=False, _logger=BlackHole(), _log_prefix="train"):
+        # Update side chain chi mask based on b-factors, if necessary
+        if use_sc_bf_mask:
+            SC_D_mask = batch.SC_D_mask * batch.SC_D_BF_mask
+        else:
+            SC_D_mask = batch.SC_D_mask
+        
         loss_fns = {
             "rotamer_recovery": lambda: rotamer_recovery_from_coords(
                 batch.S, batch.SC_D, output['final_X'], 
-                batch.residue_mask, batch.SC_D_mask,
+                batch.residue_mask, SC_D_mask,
                 _metric=_logger.get_metric(_log_prefix + " rotamer recovery")),
             "rmsd_loss": lambda: sc_rmsd(
                 output['final_X'], batch.X, batch.S, 
@@ -905,20 +911,20 @@ class PIPPack(nn.Module):
             loss_fns.update({
                 "chi_nll_loss": lambda: nll_chi_loss(
                     output["chi_log_probs"], batch.SC_D_bin,
-                    batch.S, batch.SC_D_mask,
+                    batch.S, SC_D_mask,
                     _metric=_logger.get_metric(_log_prefix + " chi nll loss"))})
             if self.predict_offset:
                 loss_fns.update({
                     "offset_mse_loss": lambda: offset_mse(
                         output["chi_bin_offset"], batch.SC_D_bin_offset,
-                        batch.SC_D_mask, self.n_chi_bins, False,
+                        SC_D_mask, self.n_chi_bins, False,
                         _metric=_logger.get_metric(_log_prefix + " offset mse loss"))})
         else:
             loss_fns.update({
                 "chi_mse_loss": lambda: supervised_chi_loss(
                     output["norm_chi"], output["unnorm_chi"],
                     batch.S, batch.residue_index,
-                    batch.SC_D_mask, batch.SC_D_sincos,
+                    SC_D_mask, batch.SC_D_sincos,
                     1.0, 0.1,
                     _metric=_logger.get_metric(_log_prefix + " chi mse loss"))})
             
@@ -1246,11 +1252,17 @@ class PIPPackFineTune(PIPPack):
         
         return outputs
     
-    def compute_loss(self, output, batch, _return_breakdown=False, _logger=BlackHole(), _log_prefix="train"):
+    def compute_loss(self, output, batch, use_sc_bf_mask=False, _return_breakdown=False, _logger=BlackHole(), _log_prefix="train"):
+        # Update side chain chi mask based on b-factors, if necessary
+        if use_sc_bf_mask:
+            SC_D_mask = batch.SC_D_mask * batch.SC_D_BF_mask
+        else:
+            SC_D_mask = batch.SC_D_mask
+        
         loss_fns = {
             "rotamer_recovery": lambda: rotamer_recovery_from_coords(
                 batch.S, batch.SC_D, output['final_X'], 
-                batch.residue_mask, batch.SC_D_mask,
+                batch.residue_mask, SC_D_mask,
                 _metric=_logger.get_metric(_log_prefix + " rotamer recovery")),
             "rmsd_loss": lambda: sc_rmsd(
                 output['final_X'], batch.X, batch.S,
@@ -1269,20 +1281,20 @@ class PIPPackFineTune(PIPPack):
             loss_fns.update({
                 "chi_nll_loss": lambda: nll_chi_loss(
                     output["chi_log_probs"], batch.SC_D_bin,
-                    batch.S, batch.SC_D_mask,
+                    batch.S, SC_D_mask,
                     _metric=_logger.get_metric(_log_prefix + " chi nll loss"))})
             if self.predict_offset:
                 loss_fns.update({
                     "offset_mse_loss": lambda: offset_mse(
                         output["chi_bin_offset"], batch.SC_D_bin_offset,
-                        batch.SC_D_mask, self.n_chi_bins, False,
+                        SC_D_mask, self.n_chi_bins, False,
                         _metric=_logger.get_metric(_log_prefix + " offset mse loss"))})
         else:
             loss_fns.update({
                 "chi_mse_loss": lambda: supervised_chi_loss(
                     output["norm_chi"], output["unnorm_chi"],
                     batch.S, batch.residue_index,
-                    batch.SC_D_mask, batch.SC_D_sincos,
+                    SC_D_mask, batch.SC_D_sincos,
                     1.0, 0.1,
                     _metric=_logger.get_metric(_log_prefix + " chi mse loss"))})
             
