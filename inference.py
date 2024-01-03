@@ -95,6 +95,7 @@ def pdbs_from_prediction(sample_results) -> Sequence[str]:
     # Get the protein components.
     S = sample_results["S"]
     residue_index = sample_results["residue_index"]
+    chain_index = sample_results["chain_index"]
     pred_xyz = sample_results["final_X"]
     
     # Convert atom14 coordinates to atom37 coordinates
@@ -107,12 +108,20 @@ def pdbs_from_prediction(sample_results) -> Sequence[str]:
         aatype = S[i].cpu().numpy()
         atom_positions = pred_xyz[i].cpu().numpy()
         atom_mask = (np.sum(atom_positions, axis=-1) != 0.0).astype(np.int32)
-        chain_index = np.zeros(aatype.shape)
+        chain_idx = chain_index[i].cpu().numpy()
         residue_idx = residue_index[i].cpu().numpy()
         b_factors = np.zeros(atom_mask.shape)
+        
+        # Update residue_index based on chain_index
+        if len(np.unique(chain_idx)) > 1:
+            adjustment = 0
+            for idx in np.unique(chain_idx)[:-1]:
+                adjustment += max(residue_idx[chain_idx == idx])
+                adjustment += 100
+                residue_idx[chain_idx == idx + 1] -= adjustment
 
         protein = Protein(aatype=aatype, atom_positions=atom_positions, atom_mask=atom_mask, residue_index=residue_idx, 
-                        chain_index=chain_index, b_factors=b_factors)
+                        chain_index=chain_idx, b_factors=b_factors)
 
         protein_string = to_pdb(protein)
         proteins.append(protein_string)

@@ -301,6 +301,7 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
     L = protein["aatype"].shape[0]
     X_mask = protein["atom_mask"]
     residue_index = protein["residue_index"]
+    chain_index = protein["chain_index"]
     BB_D, BB_D_mask = Featurizer.calc_bb_dihedrals(protein['atom_positions'], protein['residue_index'])
     SC_D, SC_D_mask = Featurizer.calc_sc_dihedrals(protein['atom_positions'], protein['aatype'])
     if sc_d_mask_from_seq:
@@ -313,6 +314,7 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
     X = X * residue_mask[..., None, None]
     X_mask = X_mask * residue_mask[..., None]
     residue_index = residue_index * residue_mask
+    chain_index = chain_index * residue_mask
     BB_D = BB_D * residue_mask[..., None]
     BB_D_mask = BB_D_mask * residue_mask[..., None]
     SC_D = SC_D * residue_mask[..., None]
@@ -339,6 +341,7 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
         X = torch.from_numpy(X).to(torch.float32), # [L, 14, 3]
         X_mask = torch.from_numpy(X_mask).to(torch.float32), # [L, 14]
         residue_index = torch.from_numpy(residue_index).to(torch.int32), # [L]
+        chain_index = torch.from_numpy(chain_index).to(torch.int32), # [L]
         residue_mask = torch.from_numpy(residue_mask).to(torch.float32), # [L]
         BB_D = torch.from_numpy(BB_D).to(torch.float32), # [L, 3]
         BB_D_sincos = torch.from_numpy(BB_D_sincos).to(torch.float32), # [L, 3, 2]
@@ -374,6 +377,7 @@ def collate_fn(protein_batch):
         X = torch.stack([_maybe_pad(protein, "X") for protein in protein_batch]), # [B, L, 14, 3]
         X_mask = torch.stack([_maybe_pad(protein, "X_mask") for protein in protein_batch]), # [B, L, 14]
         residue_index = torch.stack([_maybe_pad(protein, "residue_index") for protein in protein_batch]), # [B, L]
+        chain_index = torch.stack([_maybe_pad(protein, "chain_index") for protein in protein_batch]), # [B, L]
         residue_mask = torch.stack([_maybe_pad(protein, "residue_mask") for protein in protein_batch]), # [B, L]
         BB_D = torch.stack([_maybe_pad(protein, "BB_D") for protein in protein_batch]), # [B, L, 3]
         BB_D_sincos = torch.stack([_maybe_pad(protein, "BB_D_sincos") for protein in protein_batch]), # [B, L, 3, 2]
