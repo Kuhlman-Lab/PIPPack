@@ -1,7 +1,7 @@
 import os, json
 import argparse
 import shutil
-from data.top2018_dataset import *
+from pippack.data.top2018_dataset import *
 
 def main(args):
     os.makedirs(args.output_dir, exist_ok=True)

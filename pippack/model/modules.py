@@ -7,9 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-import data.residue_constants as rc
-from data.features import get_bb_frames, torsion_angles_to_frames, frames_and_literature_positions_to_atom14_pos
-from model.loss import rotamer_recovery_from_coords, nll_chi_loss, offset_mse, supervised_chi_loss, BlackHole, sc_rmsd, local_interresidue_sc_clash_loss, unclosed_proline_loss
+import pippack.data.residue_constants as rc
+from pippack.data.features import get_bb_frames, torsion_angles_to_frames, frames_and_literature_positions_to_atom14_pos
+from pippack.model.loss import rotamer_recovery_from_coords, nll_chi_loss, offset_mse, supervised_chi_loss, BlackHole, sc_rmsd, local_interresidue_sc_clash_loss, unclosed_proline_loss
 
 # The following gather functions
 def gather_edges(edges, neighbor_idx):

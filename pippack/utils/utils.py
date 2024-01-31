@@ -1,6 +1,7 @@
 import os
 import pickle
 import hashlib
+import traceback
 import urllib.request
 from contextlib import closing
 import tarfile
@@ -274,3 +275,45 @@ def get_stats_mean_std(dir, subdirs=[], stats_file="packing_stats.pkl", no_clash
     std_clashscore = np.std(clashscores)
         
     return (mean_stats, std_stats), (mean_clashscore, std_clashscore)
+
+
+def fetch_and_unzip_weight(output_dir):
+    """
+    Fetches a shared file from a Google Drive link and extracts it from 7-zip format.
+
+    Args:
+    - gdrive_link (str): The Google Drive sharing link of the file.
+    - output_dir (str): The directory where the file will be saved and extracted.
+
+    Returns:
+    - extracted_files (list): List of extracted files if successful, else empty list.
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    import pooch
+    import zipfile
+
+    WEIGHT_URL='https://github.com/YaoYinYing/PIPPack/releases/download/v0.1-weights/pippack.weights.zip'
+    WEIGHT_MD5='md5:03ba052cccc7958753190fc9027978d3'
+
+    # Extract the downloaded file
+    extracted_files = []
+    try:
+        f=pooch.retrieve(url=WEIGHT_URL, 
+                         known_hash=WEIGHT_MD5,
+                         progressbar=True)
+
+        with zipfile.ZipFile(f, mode='r') as z:
+            z.extractall(path=output_dir)
+            extracted_files = os.listdir(output_dir)
+            print(f'Extracted files: {extracted_files}')
+    except Exception:
+        print(f"Extraction failed: ")
+        traceback.print_exc()
+
+    finally:
+        if f and os.path.exists(f):
+            os.remove(f)
+
+    return extracted_files

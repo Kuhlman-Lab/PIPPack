@@ -2,8 +2,8 @@ from typing import *
 import numpy as np
 import torch
 import torch.nn.functional as F
-import data.residue_constants as rc
-from utils.utils import robust_normalize
+import pippack.data.residue_constants as rc
+from pippack.utils.utils import robust_normalize
 
 
 FeatureDict = Mapping[str, Union[str, np.ndarray]]

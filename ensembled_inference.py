@@ -11,13 +11,13 @@ from typing import *
 import lightning
 
 # Library code
-from utils.train_utils import load_checkpoint
-from model.modules import get_atom14_coords
-from data.protein import from_pdb_file
-from data.top2018_dataset import transform_structure, collate_fn
-import data.residue_constants as rc
-from inference import replace_protein_sequence, pdbs_from_prediction
-from model.resampling import resample_loop
+from pippack.utils.train_utils import load_checkpoint
+from pippack.model.modules import get_atom14_coords
+from pippack.data.protein import from_pdb_file
+from pippack.data.top2018_dataset import transform_structure, collate_fn
+import pippack.data.residue_constants as rc
+from pippack.inference import replace_protein_sequence, pdbs_from_prediction
+from pippack.model.resampling import resample_loop
 
 
 logger = logging.getLogger(__name__)

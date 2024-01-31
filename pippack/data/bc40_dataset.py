@@ -14,9 +14,9 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from lightning import LightningDataModule
 
-from utils.utils import download_file, extract, dir_size
-from data.protein import from_pdb_file
-from data.top2018_dataset import transform_structure, collate_fn
+from pippack.utils.utils import download_file, extract, dir_size
+from pippack.data.protein import from_pdb_file
+from pippack.data.top2018_dataset import transform_structure, collate_fn
 
 
 log = logging.getLogger(__name__)

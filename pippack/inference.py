@@ -6,18 +6,22 @@ import numpy as np
 import torch
 import hydra
 from omegaconf import DictConfig
-torch.cuda.empty_cache()
+
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    
 from typing import *
 import lightning
 
 # Library code
-from utils.train_utils import load_checkpoint
-from data.protein import to_pdb, Protein, from_pdb_file
-from data.features import make_atom14_masks, atom14_to_atom37
-from data.top2018_dataset import transform_structure, collate_fn
-import data.residue_constants as rc
-from model.resampling import resample_loop
+from pippack.utils.train_utils import load_checkpoint
+from pippack.data.protein import to_pdb, Protein, from_pdb_file
+from pippack.data.features import make_atom14_masks, atom14_to_atom37
+from pippack.data.top2018_dataset import transform_structure, collate_fn
+import pippack.data.residue_constants as rc
+from pippack.model.resampling import resample_loop
 
+script_path=os.path.abspath(os.path.dirname(__file__))
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +132,14 @@ def pdbs_from_prediction(sample_results) -> Sequence[str]:
     
     return proteins
 
-@hydra.main(version_base=None, config_path="./config", config_name="inference")
+@hydra.main(version_base=None, config_path=os.path.join(script_path,'config'), config_name="inference")
 def main(cfg: DictConfig) -> None:
+
+    if not os.path.exists(cfg.inference.weights_path):
+        os.makedirs(cfg.inference.weights_path,exist_ok=True)
+    if not os.path.exists(os.path.join(cfg.inference.weights_path, f'{cfg.inference.model_name}_config.pickle')) or not os.path.exists(os.path.join(cfg.inference.weights_path, f'{cfg.inference.model_name}_ckpt.pt')):
+        from pippack.utils.utils import fetch_and_unzip_weight
+        fetch_and_unzip_weight(cfg.inference.weights_path)
     
     # Get the config used when running experiment
     with open(os.path.join(cfg.inference.weights_path, f'{cfg.inference.model_name}_config.pickle'), 'rb') as f:
@@ -138,7 +148,9 @@ def main(cfg: DictConfig) -> None:
     # Set up RNG and device
     seed = lightning.seed_everything(cfg.inference.seed)
     logger.info(f"Using seed={seed} for RNG.")
-    device = torch.device("cuda:0" if (torch.cuda.is_available() and not cfg.inference.force_cpu) else "cpu")
+
+    device = torch.device('cuda:0' if not cfg.inference.force_cpu else "cpu")
+    print(f'will run on {device}')
     
     # Load model with same config  
     model: torch.nn.Module = hydra.utils.instantiate(exp_cfg.model).to(device)

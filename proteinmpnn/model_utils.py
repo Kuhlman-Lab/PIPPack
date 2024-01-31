@@ -15,7 +15,7 @@ import torch.nn.functional as F
 import random
 import itertools
 
-from data.rigid_utils import Rigid
+from pippack.data.rigid_utils import Rigid
 
 
 def featurize(batch, device):

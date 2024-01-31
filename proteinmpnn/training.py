@@ -21,7 +21,7 @@ def main(args):
     from proteinmpnn.model_utils import featurize, loss_smoothed, loss_nll, get_std_opt, ProteinMPNN
 
     scaler = torch.cuda.amp.GradScaler()
-     
+    
     device = torch.device("cuda:0" if (torch.cuda.is_available()) else "cpu")
 
     base_folder = time.strftime(args.path_for_outputs, time.localtime())

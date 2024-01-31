@@ -6,8 +6,8 @@ import torch
 from torchmetrics import MeanMetric, MaxMetric, MinMetric, Metric
 import torch.nn.functional as F
 
-from data.featurizer import calc_sc_dihedrals
-import data.residue_constants as rc
+from pippack.data.featurizer import calc_sc_dihedrals
+import pippack.data.residue_constants as rc
 
 
 logger = logging.getLogger(__name__)

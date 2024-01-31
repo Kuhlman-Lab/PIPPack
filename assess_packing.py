@@ -8,10 +8,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import data.residue_constants as rc
-from data.protein import from_pdb_file, Protein
-from data.featurizer import calc_sc_dihedrals, chi_mask_from_b_factors
-from model.loss import masked_mean, get_renamed_coords
+import pippack.data.residue_constants as rc
+from pippack.data.protein import from_pdb_file, Protein
+from pippack.data.featurizer import calc_sc_dihedrals, chi_mask_from_b_factors
+from pippack.model.loss import masked_mean, get_renamed_coords
 
 
 def get_pdb_targets_from_dir(dir: str, tag: str = '') -> Sequence[str]:

@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from data.rigid_utils import Rigid, Rotation
-import data.residue_constants as rc
+from pippack.data.rigid_utils import Rigid, Rotation
+import pippack.data.residue_constants as rc
 
 
 def make_atom14_masks(S):

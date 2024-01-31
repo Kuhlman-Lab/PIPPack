@@ -2,9 +2,9 @@ from typing import Dict
 import torch
 import torch.nn.functional as F
 
-from data import residue_constants as rc
-from data.featurizer import Featurizer
-from model.modules import get_atom14_coords
+from pippack.data import residue_constants as rc
+from pippack.data.featurizer import Featurizer
+from pippack.model.modules import get_atom14_coords
 
 
 def local_interresidue_sc_clash_loss(

@@ -15,10 +15,10 @@ from torch.utils.data import Dataset, Sampler, DataLoader
 from torch_geometric.data import Data
 from lightning import LightningDataModule
 
-from data.featurizer import Featurizer
-import data.residue_constants as rc
-from utils.utils import download_file, extract, dir_size
-from data.protein import from_pdb_file
+from pippack.data.featurizer import Featurizer
+import pippack.data.residue_constants as rc
+from pippack.utils.utils import download_file, extract, dir_size
+from pippack.data.protein import from_pdb_file
 
 
 log = logging.getLogger(__name__)
