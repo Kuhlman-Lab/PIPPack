@@ -134,13 +134,13 @@ def pdbs_from_prediction(sample_results) -> Sequence[str]:
 
 @hydra.main(version_base=None, config_path=os.path.join(script_path,'config'), config_name="inference")
 def main(cfg: DictConfig) -> None:
-
+    
     if not os.path.exists(cfg.inference.weights_path):
         os.makedirs(cfg.inference.weights_path,exist_ok=True)
     if not os.path.exists(os.path.join(cfg.inference.weights_path, f'{cfg.inference.model_name}_config.pickle')) or not os.path.exists(os.path.join(cfg.inference.weights_path, f'{cfg.inference.model_name}_ckpt.pt')):
         from pippack.utils.utils import fetch_and_unzip_weight
         fetch_and_unzip_weight(cfg.inference.weights_path)
-    
+
     # Get the config used when running experiment
     with open(os.path.join(cfg.inference.weights_path, f'{cfg.inference.model_name}_config.pickle'), 'rb') as f:
         exp_cfg = pickle.load(f)
@@ -216,7 +216,7 @@ def main(cfg: DictConfig) -> None:
         
         for idx, protein_string in enumerate(protein_strings):
             protein_name = pdb_names[idx]
-            pdb_out = os.path.join(cfg.inference.output_dir, protein_name + '.pdb')
+            pdb_out = os.path.join(cfg.inference.output_dir, protein_name + '.relaxed.pdb')
             
             # Write sampled pdb
             print('Finished packing:', pdb_out)

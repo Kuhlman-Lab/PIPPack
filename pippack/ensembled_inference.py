@@ -6,7 +6,10 @@ import torch
 import torch.nn.functional as F
 import hydra
 from omegaconf import DictConfig
-torch.cuda.empty_cache()
+
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    
 from typing import *
 import lightning
 
@@ -19,6 +22,7 @@ import pippack.data.residue_constants as rc
 from pippack.inference import replace_protein_sequence, pdbs_from_prediction
 from pippack.model.resampling import resample_loop
 
+script_path=os.path.abspath(os.path.dirname(__file__))
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +99,12 @@ def sample_epoch(ensemble, batch, temperature, device, n_recycle=0, resample=Fal
 
 @hydra.main(version_base=None, config_path="./config", config_name="inference_ensemble")
 def main(cfg: DictConfig) -> None:
+    if not os.path.exists(cfg.inference.weights_path):
+        os.makedirs(cfg.inference.weights_path,exist_ok=True)
+    if not glob.glob(cfg.inference.weights_path):
+        from pippack.utils.utils import fetch_and_unzip_weight
+        fetch_and_unzip_weight(cfg.inference.weights_path)
+    
     # Set up RNG and device
     seed = lightning.seed_everything(cfg.inference.seed)
     logger.info(f"Using seed={seed} for RNG.")
@@ -177,7 +187,7 @@ def main(cfg: DictConfig) -> None:
             
             # Write sampled pdb
             print('Finished packing:', pdb_out)
-            with open(os.path.join(cfg.inference.output_dir, protein_name + '.pdb'), 'w') as f:
+            with open(os.path.join(cfg.inference.output_dir, protein_name + '.relaxed.pdb'), 'w') as f:
                 f.write(protein_string)
         
 
