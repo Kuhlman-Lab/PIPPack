@@ -149,7 +149,7 @@ def main(cfg: DictConfig) -> None:
     seed = lightning.seed_everything(cfg.inference.seed)
     logger.info(f"Using seed={seed} for RNG.")
 
-    device = torch.device('cuda:0' if not cfg.inference.force_cpu else "cpu")
+    device = torch.device("cuda:0" if (torch.cuda.is_available() and not cfg.inference.force_cpu) else "cpu")
     print(f'will run on {device}')
     
     # Load model with same config  
