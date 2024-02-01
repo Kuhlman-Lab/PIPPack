@@ -279,10 +279,9 @@ def get_stats_mean_std(dir, subdirs=[], stats_file="packing_stats.pkl", no_clash
 
 def fetch_and_unzip_weight(output_dir):
     """
-    Fetches a shared file from a Google Drive link and extracts it from 7-zip format.
+    Fetches a shared file from a link and extracts it from zip format.
 
     Args:
-    - gdrive_link (str): The Google Drive sharing link of the file.
     - output_dir (str): The directory where the file will be saved and extracted.
 
     Returns:
