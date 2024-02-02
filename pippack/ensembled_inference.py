@@ -97,7 +97,7 @@ def sample_epoch(ensemble, batch, temperature, device, n_recycle=0, resample=Fal
     
     return results
 
-@hydra.main(version_base=None, config_path="./config", config_name="inference_ensemble")
+@hydra.main(version_base=None, config_path=os.path.join(script_path,'config'), config_name="inference_ensemble")
 def main(cfg: DictConfig) -> None:
     if not os.path.exists(cfg.inference.weights_path):
         os.makedirs(cfg.inference.weights_path,exist_ok=True)
