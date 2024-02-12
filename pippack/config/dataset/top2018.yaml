@@ -1,4 +1,4 @@
-_target_: data.top2018_dataset.Top2018DataModule
+_target_: pippack.data.top2018_dataset.Top2018DataModule
 data_dir: "~/kuhl_lab/users/nzrandol/protein-datasets/"
 removal_list_file: "~/kuhl_lab/users/nzrandol/protein-datasets/casp/top2018_mc_v2.01_overlap.txt"
 filter_level: "mc"

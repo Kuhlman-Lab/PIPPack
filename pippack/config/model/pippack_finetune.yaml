@@ -1,4 +1,4 @@
-_target_: model.modules.PIPPackFineTune
+_target_: pippack.model.modules.PIPPackFineTune
 node_features: 128
 edge_features: 128
 hidden_dim: 128

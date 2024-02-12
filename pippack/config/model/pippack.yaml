@@ -1,4 +1,4 @@
-_target_: model.modules.PIPPack
+_target_: pippack.model.modules.PIPPack
 node_features: 128
 edge_features: 128
 hidden_dim: 128
