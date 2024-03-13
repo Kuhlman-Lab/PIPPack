@@ -555,7 +555,7 @@ class PositionalEncodings(nn.Module):
 
 class ProteinFeatures(nn.Module):
     def __init__(self, edge_features, node_features, num_positional_embeddings=16,
-        num_rbf=16, top_k=30, augment_eps=0., dropout=0.1, af2_relpos=True):
+        num_rbf=16, top_k=30, augment_eps=0., dropout=0.1, af2_relpos=True, mask_distances=False):
         """ Extract protein features """
         super(ProteinFeatures, self).__init__()
         self.edge_features = edge_features
@@ -563,6 +563,7 @@ class ProteinFeatures(nn.Module):
         self.top_k = top_k
         self.augment_eps = augment_eps 
         self.num_rbf = num_rbf
+        self.mask_distances = mask_distances
         
         if af2_relpos:
             num_positional_embeddings = 65
@@ -631,18 +632,22 @@ class ProteinFeatures(nn.Module):
         Cb = -0.58273431*a + 0.56802827*b - 0.54067466*c + CA
         return Cb
 
-    def _atomic_distances(self, X, E_idx):
+    def _atomic_distances(self, X, E_idx, X_mask):
         
         RBF_all = []
         for i in range(X.shape[-2]):
             for j in range(X.shape[-2]):
-                RBF_all.append(self._get_rbf(X[..., i, :], X[..., j, :], E_idx))
+                rbf = self._get_rbf(X[..., i, :], X[..., j, :], E_idx)
+                if self.mask_distances:
+                    X_mask_j = gather_nodes(X_mask[..., j, None], E_idx)
+                    rbf = rbf * X_mask[..., i, None, None] * X_mask_j
+                RBF_all.append(rbf)
 
         RBF_all = torch.cat(tuple(RBF_all), dim=-1)
         
         return RBF_all
 
-    def forward(self, X, S, BB_D, mask, residue_index=None):
+    def forward(self, X, S, BB_D, mask, residue_index=None, X_mask=None):
         """ Featurize coordinates as an attributed graph """
 
         # Data augmentation
@@ -665,7 +670,9 @@ class ProteinFeatures(nn.Module):
         sc_atoms = X[..., 5:, :]
         X2 = torch.stack((N, Ca, C, O, Cb), dim=-2)
         X2 = torch.cat((X2, sc_atoms), dim=-2) 
-        RBF_all = self._atomic_distances(X2, E_idx)
+        if X_mask is None:
+            X_mask = torch.ones_like(X2[..., 0])
+        RBF_all = self._atomic_distances(X2, E_idx, X_mask)
         
         E = torch.cat((E_positional, RBF_all), -1)
             
@@ -757,6 +764,7 @@ class PIPPack(nn.Module):
         recycle_SC_D_sc: bool = False,
         recycle_SC_D_probs: bool = False,
         recycle_X: bool = True,
+        mask_distances: bool = False,
         loss: Optional[Dict[str, Union[float, bool]]] = {
             "chi_nll_loss_weight": 1.0,
             "chi_mse_loss_weight": 1.0,
@@ -781,7 +789,7 @@ class PIPPack(nn.Module):
         # Featurization layers
         self.features = ProteinFeatures(
             node_features, edge_features, top_k=k_neighbors,
-            augment_eps=augment_eps, dropout=dropout
+            augment_eps=augment_eps, dropout=dropout, mask_distances=mask_distances
         )
 
         # Embedding layers
@@ -949,6 +957,7 @@ class PIPPack(nn.Module):
         # Add empty previous prediction
         prevs = {
             "pred_X": torch.zeros_like(batch.X),
+            "pred_X_mask": torch.concatenate((torch.ones_like(batch.X_mask[..., :5]), torch.zeros_like(batch.X_mask[..., 5:])), -1),
             "pred_SC_D": torch.zeros_like(batch.SC_D),
             "pred_SC_D_probs": torch.zeros((*batch.S.shape, 4, self.n_chi_bins + 1), device=batch.S.device),
         }
@@ -972,6 +981,7 @@ class PIPPack(nn.Module):
                 # Update previous predictions
                 if self.recycle_X:
                     prevs["pred_X"] = atom14_xyz
+                    prevs["pred_X_mask"] = (atom14_xyz.sum(-1) != 0).float()
                 prevs["pred_SC_D"] = chi_pred
                 prevs["pred_SC_D_probs"] = outputs.get("chi_probs", None)
                 
@@ -991,6 +1001,7 @@ class PIPPack(nn.Module):
         # Add final predictions to outputs
         outputs['final_SC_D'] = chi_pred
         outputs['final_X'] = atom14_xyz
+        outputs["final_X_mask"] = (atom14_xyz.sum(-1) != 0).float()
             
         return outputs
     
@@ -1004,7 +1015,7 @@ class PIPPack(nn.Module):
         residue_index = batch.residue_index
 
         # Embed initial features
-        V, E, E_idx, X = self.features(X, S, BB_D, mask, residue_index)
+        V, E, E_idx, X = self.features(X, S, BB_D, mask, residue_index, prevs['pred_X_mask'])
         h_V = self.W_v(V)
         h_E = self.W_e(E)
         
@@ -1068,6 +1079,7 @@ class PIPPack(nn.Module):
         # Add empty previous prediction
         prevs = {
             "pred_X": torch.zeros_like(batch.X),
+            "pred_X_mask": torch.concatenate((torch.ones_like(batch.X_mask[..., :5]), torch.zeros_like(batch.X_mask[..., 5:])), -1),
             "pred_SC_D": torch.zeros_like(batch.SC_D),
             "pred_SC_D_probs": torch.zeros((*batch.S.shape, 4, self.n_chi_bins + 1), device=batch.S.device),
         }
@@ -1091,6 +1103,7 @@ class PIPPack(nn.Module):
                 # Update previous predictions
                 if self.recycle_X:
                     prevs["pred_X"] = atom14_xyz
+                    prevs["pred_X_mask"] = (atom14_xyz.sum(-1) != 0).float()
                 prevs["pred_SC_D"] = chi_pred
                 prevs["pred_SC_D_probs"] = sample_out.get("chi_probs", None)
                 
@@ -1110,6 +1123,7 @@ class PIPPack(nn.Module):
             # Add final predictions to outputs
             sample_out['final_SC_D'] = chi_pred
             sample_out['final_X'] = atom14_xyz
+            sample_out["final_X_mask"] = (atom14_xyz.sum(-1) != 0).float()
             
         return sample_out
 
@@ -1123,7 +1137,7 @@ class PIPPack(nn.Module):
         residue_index = batch.residue_index
         
         # Prepare node and edge embeddings
-        V, E, E_idx, X = self.features(X, S, BB_D, mask, residue_index)
+        V, E, E_idx, X = self.features(X, S, BB_D, mask, residue_index, prevs['pred_X_mask'])
         h_V = self.W_v(V)
         h_E = self.W_e(E)
         
