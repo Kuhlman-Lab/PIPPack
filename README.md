@@ -35,6 +35,8 @@ Alternatively, you can use the environment file `env/pippack_env.yaml` to build 
 # Build pippack environment from yaml file
 conda env create -f env/pippack_env.yaml
 ```
+## Data and Results
+All test datasets (CASP13, CASP14, CASP15, CASP15+context, and Top2018) and prediction results are publicly available at https://zenodo.org/records/11236817.
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
