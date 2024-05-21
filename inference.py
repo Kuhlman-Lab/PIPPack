@@ -94,7 +94,7 @@ def pdbs_from_prediction(sample_results) -> Sequence[str]:
 
     # Get the protein components.
     S = sample_results["S"]
-    residue_index = sample_results["residue_index"]
+    residue_index = sample_results["og_residue_index"]
     chain_index = sample_results["chain_index"]
     pred_xyz = sample_results["final_X"]
     
@@ -113,12 +113,12 @@ def pdbs_from_prediction(sample_results) -> Sequence[str]:
         b_factors = np.zeros(atom_mask.shape)
         
         # Update residue_index based on chain_index
-        if len(np.unique(chain_idx)) > 1:
-            adjustment = 0
-            for idx in np.unique(chain_idx)[:-1]:
-                adjustment += max(residue_idx[chain_idx == idx])
-                adjustment += 100
-                residue_idx[chain_idx == idx + 1] -= adjustment
+        # if len(np.unique(chain_idx)) > 1:
+        #     adjustment = 0
+        #     for idx in np.unique(chain_idx)[:-1]:
+        #         adjustment += max(residue_idx[chain_idx == idx])
+        #         adjustment += 100
+        #         residue_idx[chain_idx == idx + 1] -= adjustment
 
         protein = Protein(aatype=aatype, atom_positions=atom_positions, atom_mask=atom_mask, residue_index=residue_idx, 
                         chain_index=chain_idx, b_factors=b_factors)

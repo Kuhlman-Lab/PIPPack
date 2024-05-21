@@ -288,6 +288,7 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
                 protein[feat] = protein[feat][start_idx:(start_idx + crop_size)]
                 
     # Update residue_index based on chain_index (adding 100-residue gap)
+    og_residue_index = copy.deepcopy(protein['residue_index'])
     if len(np.unique(protein['chain_index'])) > 1:
         index_offset = 0
         for chain_idx in np.unique(protein['chain_index'])[:-1]:
@@ -341,6 +342,7 @@ def transform_structure(protein, n_chi_bin=36, crop_size=None, random_truncate=T
         X = torch.from_numpy(X).to(torch.float32), # [L, 14, 3]
         X_mask = torch.from_numpy(X_mask).to(torch.float32), # [L, 14]
         residue_index = torch.from_numpy(residue_index).to(torch.int32), # [L]
+        og_residue_index = torch.from_numpy(og_residue_index).to(torch.int32), # [L]
         chain_index = torch.from_numpy(chain_index).to(torch.int32), # [L]
         residue_mask = torch.from_numpy(residue_mask).to(torch.float32), # [L]
         BB_D = torch.from_numpy(BB_D).to(torch.float32), # [L, 3]
@@ -377,6 +379,7 @@ def collate_fn(protein_batch):
         X = torch.stack([_maybe_pad(protein, "X") for protein in protein_batch]), # [B, L, 14, 3]
         X_mask = torch.stack([_maybe_pad(protein, "X_mask") for protein in protein_batch]), # [B, L, 14]
         residue_index = torch.stack([_maybe_pad(protein, "residue_index") for protein in protein_batch]), # [B, L]
+        og_residue_index = torch.stack([_maybe_pad(protein, "og_residue_index") for protein in protein_batch]), # [B, L]
         chain_index = torch.stack([_maybe_pad(protein, "chain_index") for protein in protein_batch]), # [B, L]
         residue_mask = torch.stack([_maybe_pad(protein, "residue_mask") for protein in protein_batch]), # [B, L]
         BB_D = torch.stack([_maybe_pad(protein, "BB_D") for protein in protein_batch]), # [B, L, 3]

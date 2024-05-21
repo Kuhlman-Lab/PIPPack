@@ -555,7 +555,8 @@ class PositionalEncodings(nn.Module):
 
 class ProteinFeatures(nn.Module):
     def __init__(self, edge_features, node_features, num_positional_embeddings=16,
-        num_rbf=16, top_k=30, augment_eps=0., dropout=0.1, af2_relpos=True, mask_distances=False):
+        num_rbf=16, top_k=30, augment_eps=0., dropout=0.1, af2_relpos=True, mask_distances=False,
+        alternate_edge_feats=False):
         """ Extract protein features """
         super(ProteinFeatures, self).__init__()
         self.edge_features = edge_features
@@ -564,13 +565,17 @@ class ProteinFeatures(nn.Module):
         self.augment_eps = augment_eps 
         self.num_rbf = num_rbf
         self.mask_distances = mask_distances
+        self.alternate_edge_feats = alternate_edge_feats
         
         if af2_relpos:
             num_positional_embeddings = 65
 
         # Feature dimensions
         node_in = 21 + 3 * 2
-        edge_in = num_positional_embeddings + (14 ** 2) * num_rbf
+        if alternate_edge_feats:
+            edge_in = num_positional_embeddings + num_rbf + 7
+        else:
+            edge_in = num_positional_embeddings + (14 ** 2) * num_rbf
 
         # Positional encoding
         self.embeddings = PositionalEncodings(num_positional_embeddings, af2_relpos=af2_relpos)
@@ -646,6 +651,71 @@ class ProteinFeatures(nn.Module):
         RBF_all = torch.cat(tuple(RBF_all), dim=-1)
         
         return RBF_all
+    
+    def _quaternions(self, R):
+        """ Convert a batch of 3D rotations [R] to quaternions [Q]
+            R [...,3,3]
+            Q [...,4]
+        """
+        # Simple Wikipedia version
+        # en.wikipedia.org/wiki/Rotation_matrix#Quaternion
+        # For other options see math.stackexchange.com/questions/2074316/calculating-rotation-axis-from-rotation-matrix
+        diag = torch.diagonal(R, dim1=-2, dim2=-1)
+        Rxx, Ryy, Rzz = diag.unbind(-1)
+        magnitudes = 0.5 * torch.sqrt(torch.abs(1 + torch.stack([
+              Rxx - Ryy - Rzz, 
+            - Rxx + Ryy - Rzz, 
+            - Rxx - Ryy + Rzz
+        ], -1)))
+        _R = lambda i,j: R[:,:,:,i,j]
+        signs = torch.sign(torch.stack([
+            _R(2,1) - _R(1,2),
+            _R(0,2) - _R(2,0),
+            _R(1,0) - _R(0,1)
+        ], -1))
+        xyz = signs * magnitudes
+        # The relu enforces a non-negative trace
+        w = torch.sqrt(F.relu(1 + diag.sum(-1, keepdim=True))) / 2.
+        Q = torch.cat((xyz, w), -1)
+        Q = F.normalize(Q, dim=-1)
+
+        return Q
+
+    def _orientations_coarse(self, X, E_idx):
+        # Pair features
+
+        # Shifted slices of unit vectors
+        dX = X[:,1:,:] - X[:,:-1,:]
+        U = F.normalize(dX, dim=-1)
+        u_2 = U[:,:-2,:]
+        u_1 = U[:,1:-1,:]
+        # Backbone normals
+        n_2 = F.normalize(torch.cross(u_2, u_1), dim=-1)
+
+        # Build relative orientations
+        o_1 = F.normalize(u_2 - u_1, dim=-1)
+        O = torch.stack((o_1, n_2, torch.cross(o_1, n_2)), 2)
+        O = O.view(list(O.shape[:2]) + [9])
+        O = F.pad(O, (0,0,1,2), 'constant', 0)
+
+        O_neighbors = gather_nodes(O, E_idx)
+        X_neighbors = gather_nodes(X, E_idx)
+        
+        # Re-view as rotation matrices
+        O = O.view(list(O.shape[:2]) + [3,3])
+        O_neighbors = O_neighbors.view(list(O_neighbors.shape[:3]) + [3,3])
+
+        # Rotate into local reference frames
+        dX = X_neighbors - X.unsqueeze(-2)
+        dU = torch.matmul(O.unsqueeze(2), dX.unsqueeze(-1)).squeeze(-1)
+        dU = F.normalize(dU, dim=-1)
+        R = torch.matmul(O.unsqueeze(2).transpose(-1,-2), O_neighbors)
+        Q = self._quaternions(R)
+
+        # Orientation features
+        O_features = torch.cat((dU,Q), dim=-1)
+
+        return O_features
 
     def forward(self, X, S, BB_D, mask, residue_index=None, X_mask=None):
         """ Featurize coordinates as an attributed graph """
@@ -672,9 +742,16 @@ class ProteinFeatures(nn.Module):
         X2 = torch.cat((X2, sc_atoms), dim=-2) 
         if X_mask is None:
             X_mask = torch.ones_like(X2[..., 0])
-        RBF_all = self._atomic_distances(X2, E_idx, X_mask)
-        
-        E = torch.cat((E_positional, RBF_all), -1)
+
+        if self.alternate_edge_feats:
+            RBFs = self._get_rbf(Ca, Ca, E_idx)
+            O_features = self._orientations_coarse(Ca, E_idx)
+            struc_feats = torch.cat((RBFs, O_features), -1)
+        else:
+            RBF_all = self._atomic_distances(X2, E_idx, X_mask)
+            struc_feats = RBF_all
+
+        E = torch.cat((E_positional, struc_feats), -1)
             
         Vs = []
         # One-hot encoded sequence
@@ -765,6 +842,7 @@ class PIPPack(nn.Module):
         recycle_SC_D_probs: bool = False,
         recycle_X: bool = True,
         mask_distances: bool = False,
+        alternate_edge_feats: bool = False,
         loss: Optional[Dict[str, Union[float, bool]]] = {
             "chi_nll_loss_weight": 1.0,
             "chi_mse_loss_weight": 1.0,
@@ -789,7 +867,8 @@ class PIPPack(nn.Module):
         # Featurization layers
         self.features = ProteinFeatures(
             node_features, edge_features, top_k=k_neighbors,
-            augment_eps=augment_eps, dropout=dropout, mask_distances=mask_distances
+            augment_eps=augment_eps, dropout=dropout, mask_distances=mask_distances,
+            alternate_edge_feats=alternate_edge_feats
         )
 
         # Embedding layers

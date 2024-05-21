@@ -204,7 +204,6 @@ def to_pdb(prot: Protein) -> str:
     """
     restypes = rc.restypes + ['X']
     res_1to3 = lambda r: rc.restype_1to3.get(restypes[r], 'UNK')
-    atom_types = rc.atom_types
 
     pdb_lines = []
 
@@ -238,6 +237,17 @@ def to_pdb(prot: Protein) -> str:
                 residue_index[i - 1]))
             last_chain_index = chain_index[i]
             atom_index += 1  # Atom index increases at the TER symbol.
+
+        if atom_positions.shape[-2] == 14:
+            # If the protein has 14 atoms per residue, then it is a reduced representation and
+            # the order of the atoms in each residue depends on the residue type.
+            atom_types = rc.restype_name_to_atom14_names[rc.restype_1to3[rc.restypes[aatype[i]]]]
+        elif atom_positions.shape[-2] == 37:
+            # If the protein has 37 atoms per residue, then it is a full representation and
+            # the order of the atoms in each residue is fixed.
+            atom_types = rc.atom_types
+        else:
+            raise ValueError("Invalid number of atoms per residue.")
 
         res_name_3 = res_1to3(aatype[i])
         for atom_name, pos, mask, b_factor in zip(
